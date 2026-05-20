@@ -33,6 +33,69 @@ body {
     linear-gradient(180deg, #f8fbfb 0%, var(--bg) 100%);
 }
 
+#app[v-cloak] {
+  visibility: hidden;
+}
+
+.boot-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(237, 242, 244, 0.92);
+  backdrop-filter: blur(10px);
+}
+
+#app[v-cloak] + .boot-overlay {
+  display: flex;
+}
+
+.boot-panel {
+  min-width: min(420px, 100%);
+  padding: 24px 26px;
+  border: 1px solid rgba(183, 198, 204, 0.8);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: var(--shadow);
+}
+
+.boot-spinner {
+  width: 42px;
+  height: 42px;
+  border-radius: 999px;
+  border: 3px solid rgba(15, 118, 110, 0.16);
+  border-top-color: var(--accent);
+  border-right-color: rgba(15, 118, 110, 0.48);
+  animation: boot-spin 0.85s linear infinite;
+}
+
+.boot-title {
+  margin-top: 16px;
+  font: 700 14px var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.boot-copy {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+@keyframes boot-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 button,
 input,
 textarea,
@@ -84,6 +147,13 @@ select {
   font-size: 13px;
   line-height: 1.5;
   max-width: 72ch;
+}
+
+.toolbar-copy {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  max-width: 30ch;
 }
 
 .tab-strip,
@@ -374,6 +444,10 @@ select {
   text-transform: uppercase;
 }
 
+.token-table {
+  margin-top: 12px;
+}
+
 .mono {
   font-family: var(--mono);
   font-size: 12px;
@@ -508,6 +582,7 @@ select {
   .topbar-inner {
     align-items: start;
   }
+
 }
 
 @media (max-width: 760px) {

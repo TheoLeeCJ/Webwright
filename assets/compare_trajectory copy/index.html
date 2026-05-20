@@ -16,13 +16,22 @@
         <div>
           <h1 class="brand-title">Webwright Trajectory Comparison</h1>
           <div class="brand-copy">
-            Compare Codex + Webwright skill trajectory file with Webwright agent's responses.
+            Compare Codex JSONL, Webwright raw and trajectory traces, and Copilot session markdown in one normalized view.
           </div>
         </div>
-        <nav class="tab-strip">
-          <button class="tab" :class="{ active: activeView === 'summary' }" @click="activeView = 'summary'">Summary View</button>
-          <button class="tab" :class="{ active: activeView === 'traces' }" @click="activeView = 'traces'">Detailed Trace</button>
-        </nav>
+        <div class="topbar-controls">
+          <label class="toolbar-field">
+            <span class="toolbar-label">Tokenizer</span>
+            <select v-model="tokenTarget" class="toolbar-select">
+              <option v-for="option in tokenizerOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+            </select>
+          </label>
+          <div class="toolbar-copy">Default estimate target: {{ tokenizerSelectionLabel }}</div>
+          <nav class="tab-strip">
+            <button class="tab" :class="{ active: activeView === 'summary' }" @click="activeView = 'summary'">Summary View</button>
+            <button class="tab" :class="{ active: activeView === 'traces' }" @click="activeView = 'traces'">Detailed Trace</button>
+          </nav>
+        </div>
       </div>
     </header>
 
@@ -55,24 +64,25 @@
               <span class="badge">thoughts {{ traceBySide(slot.key).summary.thoughts }}</span>
               <span class="badge">commands {{ traceBySide(slot.key).summary.commands }}</span>
               <span class="badge">finals {{ traceBySide(slot.key).summary.finalResponses }}</span>
+              <span class="badge" :class="traceBySide(slot.key).tokenModeLabel === 'exact' ? 'good' : 'warn'">tokens {{ tokenTotalDisplay(traceBySide(slot.key)) }}</span>
             </div>
             <div class="button-row">
               <label class="button-label primary">
                 Replace file
-                <input type="file" accept=".jsonl,.txt" @change="handleFileInput(slot.key, $event)">
+                <input type="file" accept=".jsonl,.json,.md,.txt" @change="handleFileInput(slot.key, $event)">
               </label>
               <button class="button" @click="clearTrace(slot.key)">Clear</button>
             </div>
           </template>
           <template v-else>
-            <div class="upload-file">Drop a JSONL trace here</div>
+            <div class="upload-file">Drop a trace file here</div>
             <div class="upload-subtitle">
-              Use one side for raw response JSONL and the other for Codex JSONL. The app does not accept trajectory JSON.
+              Accepted: Codex JSONL, raw_responses.jsonl, trajectory.json, and Copilot session markdown.
             </div>
             <div class="button-row">
               <label class="button-label primary">
                 Choose file
-                <input type="file" accept=".jsonl,.txt" @change="handleFileInput(slot.key, $event)">
+                <input type="file" accept=".jsonl,.json,.md,.txt" @change="handleFileInput(slot.key, $event)">
               </label>
             </div>
           </template>
@@ -86,7 +96,7 @@
     <main class="content">
       <section v-if="!bothLoaded" class="panel">
         <div class="empty-state">
-          Load two JSONL traces to compare extracted thought entries, shell commands, and end-state outputs in a shared format.
+          Load two traces to compare extracted thought entries, shell commands, token provenance, and end-state outputs in a shared format.
         </div>
       </section>
 
@@ -96,7 +106,7 @@
             <div class="panel-head">
               <div>
                 <h2 class="panel-title">Comparison Matrix</h2>
-                <div class="muted">Raw response frames and Codex events are compared after extraction into comparable thought and command records.</div>
+                <div class="muted">Every format is normalized into task hints, thoughts, commands, outputs, and token provenance rows.</div>
               </div>
             </div>
             <table class="compare-table">
@@ -120,8 +130,68 @@
           <section class="panel">
             <div class="panel-head">
               <div>
+                <h2 class="panel-title">Per-Trace Summary</h2>
+                <div class="muted">Exact totals come from trace snapshots when present. Otherwise the page estimates tokens with js-tiktoken from the extracted text fields listed below.</div>
+              </div>
+              <div class="toolbar-copy">{{ tokenizerStatus }}</div>
+            </div>
+            <div class="trace-pane-grid">
+              <article class="mini-card" v-for="trace in [leftTrace, rightTrace]" :key="trace.side + '-summary'">
+                <div class="trace-card-head">
+                  <div>
+                    <h3>{{ trace.fileName }}</h3>
+                    <div class="muted">{{ trace.formatLabel }}</div>
+                  </div>
+                  <div class="badge-row">
+                    <span class="badge" :class="trace.tokenModeLabel === 'exact' ? 'good' : 'warn'">{{ trace.tokenModeLabel }}</span>
+                    <span class="badge">{{ tokenTotalDisplay(trace) }}</span>
+                  </div>
+                </div>
+                <div class="metric-grid">
+                  <article class="metric" v-for="metric in trace.metrics" :key="trace.side + '-' + metric.label">
+                    <div class="metric-label">{{ metric.label }}</div>
+                    <div class="metric-value">{{ metric.value }}</div>
+                    <div class="metric-sub">{{ metric.sub }}</div>
+                  </article>
+                </div>
+                <div class="task-box" v-if="trace.taskPrompt">
+                  <strong>Task Hint</strong>
+                  {{ trace.taskPrompt }}
+                </div>
+                <div class="task-box">
+                  <strong>Token Source</strong>
+                  {{ tokenNote(trace) }}
+                </div>
+                <table class="compare-table token-table">
+                  <tbody>
+                    <tr v-for="row in trace.tokenRows" :key="trace.side + '-token-row-' + row.label">
+                      <th>{{ row.label }}</th>
+                      <td class="mono">{{ row.value }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+                <div class="task-box" v-if="trace.countedFieldLabels.length">
+                  <strong>Counted Fields</strong>
+                  {{ trace.countedFieldLabels.join(', ') }}
+                </div>
+                <div class="bar-list" v-if="trace.tokenBasisRows.length">
+                  <div class="bar-row" v-for="row in trace.tokenBasisRows" :key="trace.side + '-token-basis-' + row.label">
+                    <div>
+                      <div class="mono">{{ row.label }}</div>
+                      <div class="bar-wrap"><div class="bar" :style="{ width: row.width + '%' }"></div></div>
+                    </div>
+                    <div class="mono">{{ row.value }}</div>
+                  </div>
+                </div>
+              </article>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
                 <h2 class="panel-title">Pattern Breakdown</h2>
-                <div class="muted">Top command families and frame categories in each JSONL trace.</div>
+                <div class="muted">Top command families and normalized event categories in each trace.</div>
               </div>
             </div>
             <div class="trace-pane-grid">
@@ -180,6 +250,7 @@
                 </div>
                 <div class="badge-row">
                   <span class="badge good">{{ trace.formatLabel }}</span>
+                  <span class="badge" :class="trace.tokenModeLabel === 'exact' ? 'good' : 'warn'">{{ tokenTotalDisplay(trace) }}</span>
                 </div>
               </div>
 
@@ -239,6 +310,6 @@
   </div>
 
   <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
-  <script src="./app.js"></script>
+  <script type="module" src="./app.js"></script>
 </body>
 </html>

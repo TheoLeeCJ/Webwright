@@ -1,3 +1,21 @@
+import { Tiktoken } from 'https://esm.sh/js-tiktoken/lite';
+
+const { createApp } = window.Vue;
+
+const MODEL_TO_ENCODING = {
+  'gpt-4.1': 'o200k_base',
+  'gpt-4o': 'o200k_base',
+  'gpt-4o-mini': 'o200k_base',
+  o1: 'o200k_base',
+  o3: 'o200k_base',
+  'o3-mini': 'o200k_base',
+  'gpt-4-turbo': 'cl100k_base',
+  'gpt-4': 'cl100k_base',
+  'gpt-3.5-turbo': 'cl100k_base'
+};
+
+const encodingCache = new Map();
+
 function safeJsonParse(text) {
   try {
     return JSON.parse(text);
@@ -44,24 +62,6 @@ function formatTimestamp(value) {
   return date.toLocaleString();
 }
 
-function detectFormat(text) {
-  const lines = String(text || '').trim().split(/\r?\n/).filter(Boolean);
-  if (!lines.length) {
-    return null;
-  }
-  const first = safeJsonParse(lines[0]);
-  if (!first || typeof first !== 'object') {
-    return null;
-  }
-  if (first.timestamp && first.type) {
-    return 'codex_jsonl';
-  }
-  if (first.event === 'raw_text' && typeof first.raw_text === 'string') {
-    return 'raw_response_jsonl';
-  }
-  return null;
-}
-
 function parseArguments(raw) {
   if (!raw) {
     return {};
@@ -91,7 +91,7 @@ function primaryCommand(raw) {
 }
 
 function parseExitCode(text) {
-  const match = String(text || '').match(/(?:Return code:|Process exited with code)\s*(-?\d+)/i);
+  const match = String(text || '').match(/(?:Return code:|Process exited with code|<exited with exit code)\s*(-?\d+)/i);
   return match ? Number(match[1]) : null;
 }
 
@@ -135,6 +135,51 @@ function tokenRowsFromTotals(tokens) {
     { label: 'cached', value: numberFormat(tokens.cached_input_tokens) },
     { label: 'total', value: numberFormat(tokens.total_tokens) }
   ];
+}
+
+function extractTrajectoryUsage(text, fileName) {
+  const parsed = safeJsonParse(String(text || '').trim());
+  if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.messages)) {
+    throw new Error('Attachment must be a valid trajectory.json file.');
+  }
+  let latestUsage = null;
+  parsed.messages.forEach((message) => {
+    const usage = message && message.extra && message.extra.usage;
+    const cumulative = usage && usage.cumulative_response;
+    if (cumulative && typeof cumulative.total_tokens === 'number') {
+      latestUsage = cumulative;
+    }
+  });
+  if (!latestUsage) {
+    throw new Error('trajectory.json does not contain messages[].extra.usage.cumulative_response.');
+  }
+  return {
+    fileName,
+    exactTokens: latestUsage,
+    tokenRows: tokenRowsFromTotals(latestUsage),
+    tokenSourceLabel: 'Exact tokens from attached trajectory.json.'
+  };
+}
+
+function applyTrajectoryCompanion(trace, companion) {
+  return Object.assign({}, trace, {
+    exactTokens: companion.exactTokens,
+    tokenRows: companion.tokenRows,
+    tokenSourceLabel: companion.tokenSourceLabel,
+    tokenModeLabel: 'exact',
+    companionFileName: companion.fileName
+  });
+}
+
+function stripTrajectoryCompanion(trace) {
+  const exactTokens = trace.baseExactTokens || null;
+  return Object.assign({}, trace, {
+    exactTokens,
+    tokenRows: exactTokens ? tokenRowsFromTotals(exactTokens) : [{ label: 'availability', value: 'estimate pending' }],
+    tokenSourceLabel: trace.baseTokenSourceLabel,
+    tokenModeLabel: exactTokens ? 'exact' : 'estimate',
+    companionFileName: ''
+  });
 }
 
 function statusFromExit(exitCode, sessionId, output, done) {
@@ -200,61 +245,504 @@ function splitConcatenatedJsonObjects(text) {
   return segments.map((segment) => safeJsonParse(segment)).filter(Boolean);
 }
 
-function extractTrajectoryUsage(text, fileName) {
-  const object = safeJsonParse(String(text || '').trim());
-  if (!object || typeof object !== 'object' || !Array.isArray(object.messages)) {
-    throw new Error('Attachment must be a trajectory.json file');
-  }
+function getTokenizerSelection(value) {
+  const [mode, name] = String(value || 'model:o3').split(':');
+  const encoding = mode === 'model' ? MODEL_TO_ENCODING[name] || 'o200k_base' : name || 'o200k_base';
+  return { mode, name: name || 'o3', encoding };
+}
 
-  let latestUsage = null;
-  object.messages.forEach((message) => {
-    const usage = message && message.extra && message.extra.usage;
-    if (usage && usage.cumulative_response) {
-      latestUsage = usage;
+async function loadEncoder(encoding) {
+  if (encodingCache.has(encoding)) {
+    return encodingCache.get(encoding);
+  }
+  const response = await fetch(`https://tiktoken.pages.dev/js/${encoding}.json`);
+  if (!response.ok) {
+    throw new Error(`Failed to load ${encoding} ranks from CDN`);
+  }
+  const ranks = await response.json();
+  const encoder = new Tiktoken(ranks);
+  encodingCache.set(encoding, encoder);
+  return encoder;
+}
+
+function mergeEstimateParts(parts) {
+  const grouped = new Map();
+  for (const part of parts || []) {
+    if (!part || !String(part.text || '').trim()) {
+      continue;
     }
-  });
-
-  if (!latestUsage || !latestUsage.cumulative_response) {
-    throw new Error('trajectory.json does not contain cumulative_response usage data');
+    const key = part.label || 'other';
+    if (!grouped.has(key)) {
+      grouped.set(key, []);
+    }
+    grouped.get(key).push(String(part.text));
   }
+  return Array.from(grouped.entries()).map(([label, texts]) => ({
+    label,
+    text: texts.join('\n\n')
+  }));
+}
 
+function contentToText(content) {
+  if (typeof content === 'string') {
+    return content;
+  }
+  if (Array.isArray(content)) {
+    return content.map((part) => {
+      if (typeof part === 'string') {
+        return part;
+      }
+      if (part && typeof part === 'object') {
+        if (typeof part.text === 'string') {
+          return part.text;
+        }
+        if (typeof part.content === 'string') {
+          return part.content;
+        }
+      }
+      return part ? JSON.stringify(part) : '';
+    }).filter(Boolean).join('\n\n');
+  }
+  return content ? JSON.stringify(content) : '';
+}
+
+function normalizeObservation(message) {
+  const extra = message && message.extra ? message.extra : {};
+  if (extra.observation && typeof extra.observation === 'object') {
+    return {
+      output: String(extra.observation.command_output || ''),
+      exitCode: typeof extra.observation.returncode === 'number' ? extra.observation.returncode : parseExitCode(extra.observation.command_output || ''),
+      command: String(extra.observation.command || ''),
+      success: extra.observation.success
+    };
+  }
+  const text = contentToText(message.content);
+  if (!/^Observation:/i.test(text)) {
+    return null;
+  }
+  const outputMatch = text.match(/Command output:\n([\s\S]*)$/i);
+  const commandMatch = text.match(/Command:\s*([^\n]+)/i);
   return {
-    fileName,
-    tokenRows: tokenRowsFromTotals(latestUsage.cumulative_response),
-    usage: latestUsage
+    output: outputMatch ? outputMatch[1].trim() : text,
+    exitCode: parseExitCode(text),
+    command: commandMatch ? commandMatch[1].trim() : '',
+    success: /Status:\s*ok/i.test(text)
   };
 }
 
-function applyTrajectoryCompanion(trace, companion) {
-  return Object.assign({}, trace, {
-    tokenRows: companion.tokenRows,
-    tokenSource: 'trajectory cumulative_response',
-    companionFileName: companion.fileName
+function stripSessionMarkup(text) {
+  return String(text || '')
+    .replace(/<details>/gi, '')
+    .replace(/<\/details>/gi, '')
+    .replace(/<summary>.*?<\/summary>/gis, '')
+    .replace(/<sub>.*?<\/sub>/gis, '')
+    .replace(/^---$/gm, '')
+    .trim();
+}
+
+function extractCodeFences(text) {
+  const fences = [];
+  const regex = /(^|\n)(`{3,})([^\n]*)\n([\s\S]*?)\n\2(?=\n|$)/g;
+  let match = regex.exec(text);
+  while (match) {
+    fences.push({
+      fence: match[2],
+      language: (match[3] || '').trim(),
+      content: match[4]
+    });
+    match = regex.exec(text);
+  }
+  return fences;
+}
+
+function extractBoldSummary(text) {
+  const match = String(text || '').match(/\*\*([^*\n][\s\S]*?)\*\*/);
+  return match ? shortText(match[1].trim(), 140) : '';
+}
+
+function extractPatchTargets(patchText) {
+  const targets = [];
+  const regex = /^\*\*\*\s+(Add|Update|Delete) File:\s+(.+)$/gm;
+  let match = regex.exec(String(patchText || ''));
+  while (match) {
+    targets.push({ action: match[1], path: match[2].trim() });
+    match = regex.exec(String(patchText || ''));
+  }
+  return targets;
+}
+
+function summarizePatchTargets(targets) {
+  if (!targets.length) {
+    return 'apply_patch';
+  }
+  const first = targets[0];
+  const suffix = targets.length > 1 ? ' +' + (targets.length - 1) + ' more' : '';
+  return 'apply_patch ' + first.action + ' ' + first.path + suffix;
+}
+
+function extractLargeOutputPath(text) {
+  const match = String(text || '').match(/Saved to:\s*(\/\S+)/);
+  return match ? match[1] : '';
+}
+
+function extractSessionMetadata(text) {
+  const source = String(text || '');
+  const readValue = (label) => {
+    const match = source.match(new RegExp('^> - \\*\\*' + label + ':\\*\\*\\s+(.+?)\\s*$', 'm'));
+    return match ? match[1].replace(/`/g, '').trim() : '';
+  };
+  return {
+    sessionId: readValue('Session ID'),
+    started: readValue('Started'),
+    duration: readValue('Duration'),
+    exported: readValue('Exported')
+  };
+}
+
+function looksLikePython(text) {
+  return /(from\s+[A-Za-z0-9_\.]+\s+import\s+|import\s+[A-Za-z0-9_\.]+|async\s+def\s+|def\s+[A-Za-z_][A-Za-z0-9_]*\s*\(|class\s+[A-Za-z_][A-Za-z0-9_]*\s*[(:]|asyncio\.run\(|await\s+[A-Za-z_][A-Za-z0-9_\.]*\(|if\s+__name__\s*==\s*['"]__main__['"])/m.test(String(text || ''));
+}
+
+function extractPythonHeredocs(text) {
+  const blocks = [];
+  const regex = /(?:^|\n)[^\n]*\bpython(?:3(?:\.\d+)?)?\s+-\s*<<['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?\n([\s\S]*?)\n\1(?=\n|$)/g;
+  let match = regex.exec(String(text || ''));
+  while (match) {
+    const body = String(match[2] || '').trim();
+    if (body && looksLikePython(body)) {
+      blocks.push({ title: 'python heredoc', text: body, sourceLabel: 'python heredoc' });
+    }
+    match = regex.exec(String(text || ''));
+  }
+  return blocks;
+}
+
+function extractPythonFromPatch(text) {
+  const lines = String(text || '').split(/\r?\n/);
+  const blocks = [];
+  let active = null;
+  const flush = () => {
+    if (!active) {
+      return;
+    }
+    const body = active.lines.join('\n').replace(/^\n+|\n+$/g, '');
+    if (body && looksLikePython(body)) {
+      blocks.push({
+        title: active.path,
+        text: body,
+        sourceLabel: active.action.toLowerCase() + ' patch'
+      });
+    }
+    active = null;
+  };
+  lines.forEach((line) => {
+    const fileMatch = line.match(/^\*\*\*\s+(Add|Update|Delete) File:\s+(.+)$/);
+    if (fileMatch) {
+      flush();
+      const action = fileMatch[1];
+      const path = fileMatch[2].trim();
+      active = path.endsWith('.py') && action !== 'Delete' ? { action, path, lines: [] } : null;
+      return;
+    }
+    if (!active) {
+      return;
+    }
+    if (/^\*\*\* End Patch$/.test(line)) {
+      flush();
+      return;
+    }
+    if (line.startsWith('@@') || line.startsWith('-')) {
+      return;
+    }
+    if (line.startsWith('+')) {
+      active.lines.push(line.slice(1));
+      return;
+    }
+    active.lines.push(line);
+  });
+  flush();
+  return blocks;
+}
+
+function extractPythonBlocks(text) {
+  const blocks = [];
+  extractCodeFences(text).forEach((fence) => {
+    const language = String(fence.language || '').toLowerCase();
+    const content = String(fence.content || '').trim();
+    if (!content) {
+      return;
+    }
+    if (language === 'python' || language === 'py' || (!language && looksLikePython(content))) {
+      blocks.push({ title: 'python fence', text: content, sourceLabel: language || 'python fence' });
+    }
+  });
+  blocks.push(...extractPythonHeredocs(text));
+  blocks.push(...extractPythonFromPatch(text));
+  const seen = new Set();
+  return blocks.filter((block) => {
+    const key = String(block.text || '').trim();
+    if (!key || seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
   });
 }
 
-function stripTrajectoryCompanion(trace) {
-  if (!trace || trace.kind !== 'raw_response_jsonl') {
-    return trace;
-  }
-  return Object.assign({}, trace, {
-    tokenRows: [{ label: 'availability', value: 'not recorded' }],
-    tokenSource: 'attach trajectory.json to enrich tokens',
-    companionFileName: ''
+function uniqueStrings(values) {
+  return Array.from(new Set((values || []).filter(Boolean)));
+}
+
+function appendPythonScripts(target, seen, text, options = {}) {
+  extractPythonBlocks(text).forEach((block) => {
+    const scriptText = String(block.text || '').trim();
+    if (!scriptText || seen.has(scriptText)) {
+      return;
+    }
+    seen.add(scriptText);
+    const order = target.length + 1;
+    target.push({
+      id: (options.idPrefix || 'python-script') + '-' + order,
+      order,
+      title: block.title || options.title || 'Python script ' + order,
+      text: scriptText,
+      timeLabel: options.timeLabel || 'n/a',
+      sourceLabel: options.sourceLabel || block.sourceLabel || '',
+      chips: uniqueStrings([options.sourceLabel || block.sourceLabel || 'python'].concat(options.chips || []))
+    });
   });
 }
 
-function tokenRowValue(trace, label) {
-  if (!trace || !Array.isArray(trace.tokenRows)) {
-    return 'n/a';
+function extractModelToolPayload(args, fallbackCommand) {
+  if (typeof args === 'string' && args.trim()) {
+    return args.trim();
   }
-  const row = trace.tokenRows.find((item) => item.label === label);
-  return row ? row.value : 'n/a';
+  if (!args || typeof args !== 'object') {
+    return String(fallbackCommand || '').trim();
+  }
+  for (const key of ['input', 'cmd', 'command', 'bash_command']) {
+    if (typeof args[key] === 'string' && args[key].trim()) {
+      return args[key].trim();
+    }
+  }
+  const picked = {};
+  ['query', 'path', 'pattern', 'skill', 'filePath', 'old_path', 'new_path'].forEach((key) => {
+    if (typeof args[key] === 'string' && args[key].trim()) {
+      picked[key] = args[key].trim();
+    }
+  });
+  if (Array.isArray(args.urls) && args.urls.length) {
+    picked.urls = args.urls;
+  }
+  return Object.keys(picked).length ? JSON.stringify(picked, null, 2) : String(fallbackCommand || '').trim();
+}
+
+function extractFirstPath(text) {
+  const match = String(text || '').match(/\/(?:[^\s`*]|\\ )+/);
+  return match ? match[0].replace(/\\ /g, ' ') : '';
+}
+
+function parseMarkdownSections(text) {
+  const lines = String(text || '').split(/\r?\n/);
+  const sections = [];
+  let pendingTime = '';
+  let index = 0;
+  while (index < lines.length) {
+    const line = lines[index];
+    const timeMatch = line.match(/^<sub>.*?⏱️\s*([^<]+)<\/sub>$/);
+    if (timeMatch) {
+      pendingTime = timeMatch[1].trim();
+      index += 1;
+      continue;
+    }
+    const headingMatch = line.match(/^###\s+(ℹ️ Info|👤 User|💬 Copilot|✅\s+`([^`]+)`)\s*$/);
+    if (!headingMatch) {
+      index += 1;
+      continue;
+    }
+    const tool = headingMatch[2] || '';
+    let type = 'info';
+    if (tool) {
+      type = 'tool';
+    } else if (/User/.test(headingMatch[1])) {
+      type = 'user';
+    } else if (/Copilot/.test(headingMatch[1])) {
+      type = 'copilot';
+    }
+    let cursor = index + 1;
+    const bodyLines = [];
+    while (cursor < lines.length) {
+      if (lines[cursor].match(/^<sub>.*?⏱️/)) {
+        break;
+      }
+      if (lines[cursor].match(/^###\s+(ℹ️ Info|👤 User|💬 Copilot|✅\s+`[^`]+`)\s*$/)) {
+        break;
+      }
+      bodyLines.push(lines[cursor]);
+      cursor += 1;
+    }
+    sections.push({ type, tool, timeLabel: pendingTime || 'n/a', body: bodyLines.join('\n').trim() });
+    pendingTime = '';
+    index = cursor;
+  }
+  return sections;
+}
+
+function parseSessionToolSection(section, side, commandOrder, eventOrder) {
+  const body = section.body || '';
+  const fences = extractCodeFences(body);
+  const plainBody = stripSessionMarkup(body);
+  const title = extractBoldSummary(plainBody);
+  const argsFence = fences.find((fence) => fence.language === 'json');
+  const parsedArgs = argsFence ? safeJsonParse(argsFence.content.trim()) : null;
+  let command = '';
+  let output = '';
+  let exitCode = null;
+  let extraChips = [];
+  let payloadText = '';
+  if (section.tool === 'bash') {
+    const commandFence = fences.find((fence) => /^\$\s/m.test(fence.content));
+    const outputFenceIndex = commandFence ? fences.indexOf(commandFence) + 1 : -1;
+    command = commandFence ? commandFence.content.replace(/^\$\s?/, '').trim() : '';
+    output = outputFenceIndex > 0 && fences[outputFenceIndex] ? fences[outputFenceIndex].content.trim() : plainBody;
+    exitCode = parseExitCode(output);
+    const savedPath = extractLargeOutputPath(output);
+    if (title) {
+      extraChips.push(title);
+    }
+    if (savedPath) {
+      extraChips.push('saved output');
+    }
+    payloadText = command;
+  } else if (section.tool === 'apply_patch') {
+    const patchValue = typeof parsedArgs === 'string' ? parsedArgs : parsedArgs && typeof parsedArgs.input === 'string' ? parsedArgs.input : '';
+    const patchTargets = extractPatchTargets(patchValue);
+    command = patchValue ? ('apply_patch\n' + patchValue.trim()) : 'apply_patch';
+    output = fences.length > 1 ? fences[fences.length - 1].content.trim() : plainBody;
+    extraChips = [summarizePatchTargets(patchTargets)].concat(patchTargets.slice(0, 3).map((target) => target.action.toLowerCase()));
+    payloadText = patchValue;
+  } else if (section.tool === 'view') {
+    const path = extractFirstPath(plainBody);
+    command = path ? 'view ' + path : 'view';
+    output = fences.length ? fences[fences.length - 1].content.trim() : plainBody;
+    if (title) {
+      extraChips.push(title);
+    }
+    payloadText = extractModelToolPayload(parsedArgs, command);
+  } else if (section.tool === 'glob') {
+    const pattern = fences.length ? fences[0].content.trim() : shortText(plainBody, 120);
+    command = pattern ? 'glob ' + pattern : 'glob';
+    output = fences.length > 1 ? fences[1].content.trim() : plainBody;
+    if (title) {
+      extraChips.push(title);
+    }
+    payloadText = extractModelToolPayload(parsedArgs, command);
+  } else if (section.tool === 'skill') {
+    const argsText = parsedArgs ? JSON.stringify(parsedArgs) : shortText(plainBody, 160);
+    command = 'skill ' + shortText(argsText, 80);
+    output = fences.length ? fences[fences.length - 1].content.trim() : plainBody;
+    if (title) {
+      extraChips.push(title);
+    }
+    payloadText = extractModelToolPayload(parsedArgs, command);
+  } else {
+    const path = extractFirstPath(plainBody);
+    command = section.tool + (path ? ' ' + path : '');
+    output = fences.length ? fences[fences.length - 1].content.trim() : plainBody;
+    if (title) {
+      extraChips.push(title);
+    }
+    payloadText = extractModelToolPayload(parsedArgs, command);
+  }
+  if (!payloadText) {
+    payloadText = extractModelToolPayload(parsedArgs, command);
+  }
+  if (title && section.tool === 'apply_patch') {
+    output = (title + '\n' + output).trim();
+  }
+  const state = statusFromExit(exitCode, '', output, false);
+  const pythonScripts = [];
+  appendPythonScripts(pythonScripts, new Set(), payloadText, {
+    idPrefix: side + '-session-python-' + commandOrder,
+    timeLabel: section.timeLabel,
+    sourceLabel: section.tool,
+    chips: [section.tool]
+  });
+  return {
+    run: {
+      id: side + '-session-command-' + commandOrder,
+      order: commandOrder,
+      command,
+      primaryCommand: primaryCommand(command || section.tool),
+      channel: section.tool,
+      timeLabel: section.timeLabel,
+      exitCode,
+      outputPreview: shortMultiline(output, 520),
+      status: state.label,
+      statusClass: state.css
+    },
+    events: [
+      {
+        id: side + '-session-event-' + eventOrder,
+        kind: 'tool_call',
+        summary: section.tool === 'apply_patch' ? (command || plainBody) : shortMultiline(command || plainBody, 460),
+        timeLabel: section.timeLabel,
+        chips: [section.tool, primaryCommand(command || section.tool)].concat(extraChips)
+      },
+      {
+        id: side + '-session-event-' + (eventOrder + 1),
+        kind: 'tool_result',
+        summary: shortMultiline(output || plainBody, 460),
+        timeLabel: section.timeLabel,
+        chips: [section.tool].concat(exitCode !== null ? ['exit ' + exitCode] : []).concat(extractLargeOutputPath(output) ? ['saved output'] : [])
+      }
+    ],
+    estimateParts: [
+      title ? { label: 'tool titles', text: title } : null,
+      parsedArgs ? { label: 'tool arguments', text: typeof parsedArgs === 'string' ? parsedArgs : JSON.stringify(parsedArgs, null, 2) } : null,
+      command ? { label: 'tool commands', text: command } : null,
+      output ? { label: 'tool outputs', text: output } : null
+    ].filter(Boolean),
+    pythonScripts
+  };
+}
+
+function detectFormat(text) {
+  const source = String(text || '').trim();
+  if (!source) {
+    return null;
+  }
+  if (/^#\s+🤖\s+Copilot CLI Session/m.test(source) || /^###\s+💬\s+Copilot/m.test(source)) {
+    return 'copilot_session_md';
+  }
+  if (source[0] === '{' || source[0] === '[') {
+    const parsed = safeJsonParse(source);
+    if (parsed && typeof parsed === 'object' && Array.isArray(parsed.messages) && parsed.info) {
+      return 'trajectory_json';
+    }
+  }
+  const lines = source.split(/\r?\n/).filter(Boolean);
+  if (!lines.length) {
+    return null;
+  }
+  const first = safeJsonParse(lines[0]);
+  if (!first || typeof first !== 'object') {
+    return null;
+  }
+  if (first.timestamp && first.type) {
+    return 'codex_jsonl';
+  }
+  if (first.event === 'raw_text' && typeof first.raw_text === 'string') {
+    return 'raw_response_jsonl';
+  }
+  return null;
 }
 
 function finalizeTrace(base) {
   const commandFamilies = toBarRows(countBy(base.commandRuns, (run) => run.primaryCommand));
   const defaultChannelFamilies = toBarRows(countBy(base.events, (event) => event.kind));
+  const exactTokens = base.exactTokens || null;
+  const tokenSourceLabel = base.tokenSourceLabel || 'Estimated from extracted trace text.';
   return {
     side: base.side,
     kind: base.kind,
@@ -267,16 +755,28 @@ function finalizeTrace(base) {
     thoughtEntries: base.thoughtEntries,
     commandRuns: base.commandRuns,
     finalResponses: base.finalResponses,
-    tokenRows: base.tokenRows,
-    tokenSource: base.tokenSource || '',
-    companionFileName: base.companionFileName || '',
+    pythonScripts: base.pythonScripts || [],
     metrics: base.metrics,
     commandFamilies,
     channelFamilies: base.channelFamilies || defaultChannelFamilies,
+    exactTokens,
+    baseExactTokens: exactTokens,
+    tokenRows: exactTokens ? tokenRowsFromTotals(exactTokens) : [{ label: 'availability', value: 'estimate pending' }],
+    tokenSourceLabel,
+    baseTokenSourceLabel: tokenSourceLabel,
+    tokenModeLabel: exactTokens ? 'exact' : 'estimate',
+    tokenEstimateParts: mergeEstimateParts(base.tokenEstimateParts || []),
+    countedFieldLabels: base.countedFieldLabels || [],
+    tokenBasisRows: [],
+    tokenEstimateTotal: null,
+    tokenEstimateError: '',
+    tokenSelectionLabel: '',
+    companionFileName: '',
     summary: {
       thoughts: base.thoughtEntries.length,
       commands: base.commandRuns.length,
       commandRuns: base.commandRuns.length,
+      pythonScripts: (base.pythonScripts || []).length,
       finalResponses: base.finalResponses.length,
       events: base.events.length
     }
@@ -292,12 +792,14 @@ function normalizeCodex(text, fileName, filePath, side) {
   const commandRuns = [];
   const thoughtEntries = [];
   const finalResponses = [];
+  const pythonScripts = [];
+  const pythonSeen = new Set();
   const events = [];
+  const estimateParts = [];
   let latestTokens = null;
   let thoughtOrder = 0;
   let commandOrder = 0;
   let userPrompt = '';
-
   lines.forEach((line) => {
     const item = safeJsonParse(line);
     if (!item || typeof item !== 'object') {
@@ -308,49 +810,35 @@ function normalizeCodex(text, fileName, filePath, side) {
       latestTokens = item.payload.info ? item.payload.info.total_token_usage : null;
     }
   });
-
   entries.forEach((item, index) => {
     const id = side + '-codex-' + index;
     const timeLabel = formatTimestamp(item.timestamp || '');
-
     if (item.type === 'event_msg' && item.payload && item.payload.type === 'user_message') {
       const summary = shortMultiline(item.payload.message, 360);
       if (!userPrompt) {
         userPrompt = summary;
       }
-      events.push({
-        id,
-        kind: 'user_message',
-        summary,
-        timeLabel,
-        chips: ['user']
-      });
+      estimateParts.push({ label: 'user messages', text: String(item.payload.message || '') });
+      events.push({ id, kind: 'user_message', summary, timeLabel, chips: ['user'] });
       return;
     }
-
     if (item.type === 'event_msg' && item.payload && item.payload.type === 'agent_message') {
       thoughtOrder += 1;
       const textBody = shortMultiline(item.payload.message, 520);
-      thoughtEntries.push({
-        id,
-        order: thoughtOrder,
-        text: textBody,
+      thoughtEntries.push({ id, order: thoughtOrder, text: textBody, timeLabel, chips: [item.payload.phase || 'commentary'] });
+      estimateParts.push({ label: 'agent messages', text: String(item.payload.message || '') });
+      appendPythonScripts(pythonScripts, pythonSeen, item.payload.message, {
+        idPrefix: side + '-codex-python',
         timeLabel,
+        sourceLabel: 'agent message',
         chips: [item.payload.phase || 'commentary']
       });
-      events.push({
-        id,
-        kind: 'thought',
-        summary: textBody,
-        timeLabel,
-        chips: [item.payload.phase || 'commentary']
-      });
+      events.push({ id, kind: 'thought', summary: textBody, timeLabel, chips: [item.payload.phase || 'commentary'] });
       if (/final|answer|result/i.test(item.payload.phase || '') && textBody) {
-        finalResponses.push({ id: id + '-final', text: textBody, timeLabel });
+        finalResponses.push({ id: id + '-final', order: finalResponses.length + 1, text: textBody, timeLabel });
       }
       return;
     }
-
     if (item.type === 'event_msg' && item.payload && item.payload.type === 'token_count') {
       const total = item.payload.info && item.payload.info.total_token_usage ? item.payload.info.total_token_usage : {};
       events.push({
@@ -362,13 +850,12 @@ function normalizeCodex(text, fileName, filePath, side) {
       });
       return;
     }
-
     if (item.type === 'response_item' && item.payload && item.payload.type === 'function_call') {
       const args = parseArguments(item.payload.arguments);
       const tool = item.payload.name || 'unknown';
       const command = args.cmd || args.command || args.bash_command || '';
+      const payloadText = extractModelToolPayload(args, command);
       callById.set(item.payload.call_id, { tool, args, command });
-
       if (command) {
         commandOrder += 1;
         const run = {
@@ -387,7 +874,15 @@ function normalizeCodex(text, fileName, filePath, side) {
         commandRuns.push(run);
         runByCallId.set(item.payload.call_id, run);
       }
-
+      if (payloadText) {
+        estimateParts.push({ label: 'model-emitted tool payloads', text: payloadText });
+        appendPythonScripts(pythonScripts, pythonSeen, payloadText, {
+          idPrefix: side + '-codex-python',
+          timeLabel,
+          sourceLabel: tool,
+          chips: [tool]
+        });
+      }
       events.push({
         id,
         kind: 'tool_call',
@@ -397,20 +892,15 @@ function normalizeCodex(text, fileName, filePath, side) {
       });
       return;
     }
-
     if (item.type === 'response_item' && item.payload && item.payload.type === 'function_call_output') {
       const call = callById.get(item.payload.call_id) || {};
-      const outputText = Array.isArray(item.payload.output)
-        ? JSON.stringify(item.payload.output).slice(0, 600)
-        : String(item.payload.output || '');
+      const outputText = Array.isArray(item.payload.output) ? JSON.stringify(item.payload.output) : String(item.payload.output || '');
       const exitCode = parseExitCode(outputText);
       const sessionId = parseSessionId(outputText);
       let run = runByCallId.get(item.payload.call_id) || null;
-
       if (!run && call.tool === 'write_stdin' && call.args && call.args.session_id) {
         run = runBySession.get(String(call.args.session_id)) || null;
       }
-
       if (run) {
         if (sessionId && !run.sessionId) {
           run.sessionId = sessionId;
@@ -426,7 +916,9 @@ function normalizeCodex(text, fileName, filePath, side) {
         run.status = state.label;
         run.statusClass = state.css;
       }
-
+      if (outputText) {
+        estimateParts.push({ label: 'tool outputs', text: outputText });
+      }
       events.push({
         id,
         kind: 'tool_result',
@@ -436,7 +928,6 @@ function normalizeCodex(text, fileName, filePath, side) {
       });
     }
   });
-
   commandRuns.forEach((run) => {
     if (run.status === 'started') {
       const state = statusFromExit(run.exitCode, '', run.outputPreview, false);
@@ -451,12 +942,11 @@ function normalizeCodex(text, fileName, filePath, side) {
     { label: 'token snapshots', value: events.filter((event) => event.kind === 'token_snapshot').length },
     { label: 'final responses', value: finalResponses.length }
   ]);
-
   return finalizeTrace({
     side,
     kind: 'codex_jsonl',
     formatLabel: 'Codex JSONL',
-    description: "Codex CLI's session .jsonl",
+    description: 'Codex CLI session JSONL with user, agent, tool, and token events.',
     fileName,
     filePath,
     taskPrompt: userPrompt,
@@ -464,13 +954,23 @@ function normalizeCodex(text, fileName, filePath, side) {
     thoughtEntries,
     commandRuns,
     finalResponses,
-    tokenRows: tokenRowsFromTotals(latestTokens),
-    tokenSource: latestTokens ? 'codex token_count total_token_usage' : 'no token_count snapshot',
+    pythonScripts,
+    exactTokens: latestTokens,
+    tokenSourceLabel: latestTokens
+      ? 'Exact tokens from token_count snapshot.'
+      : 'Estimated from extracted trace text.',
+    tokenEstimateParts: estimateParts,
+    countedFieldLabels: [
+      'event_msg.user_message.message',
+      'event_msg.agent_message.message',
+      'response_item.function_call.arguments.(cmd|command|bash_command)',
+      'response_item.function_call_output.output'
+    ],
     metrics: [
       { label: 'Events', value: numberFormat(events.length), sub: 'normalized event records' },
       { label: 'Thoughts', value: numberFormat(thoughtEntries.length), sub: 'agent commentary entries' },
       { label: 'Commands', value: numberFormat(commandRuns.length), sub: 'shell commands reconstructed from tool calls' },
-      { label: 'Token total', value: latestTokens ? numberFormat(latestTokens.total_tokens) : 'n/a', sub: 'latest token snapshot if present' }
+      { label: 'Token source', value: latestTokens ? 'exact' : 'estimate', sub: latestTokens ? 'token_count snapshot present' : 'fallback to tokenizer estimate' }
     ],
     channelFamilies
   });
@@ -482,13 +982,15 @@ function normalizeRawResponses(text, fileName, filePath, side) {
   const thoughtEntries = [];
   const commandRuns = [];
   const finalResponses = [];
+  const pythonScripts = [];
+  const pythonSeen = new Set();
+  const estimateParts = [];
   let thoughtOrder = 0;
   let commandOrder = 0;
   let finalOrder = 0;
   let extractedFrames = 0;
   let emptyFrames = 0;
   let taskPrompt = '';
-
   lines.forEach((line, lineIndex) => {
     const outer = safeJsonParse(line);
     if (!outer || typeof outer !== 'object') {
@@ -512,20 +1014,15 @@ function normalizeRawResponses(text, fileName, filePath, side) {
       if (hasThought) {
         thoughtOrder += 1;
         const textBody = shortMultiline(frame.thought, 520);
-        thoughtEntries.push({
-          id: idBase + '-thought',
-          order: thoughtOrder,
-          text: textBody,
+        thoughtEntries.push({ id: idBase + '-thought', order: thoughtOrder, text: textBody, timeLabel, chips: ['attempt ' + (outer.attempt || 'n/a')] });
+        estimateParts.push({ label: 'thought fields', text: String(frame.thought || '') });
+        appendPythonScripts(pythonScripts, pythonSeen, frame.thought, {
+          idPrefix: side + '-raw-python',
           timeLabel,
+          sourceLabel: 'thought field',
           chips: ['attempt ' + (outer.attempt || 'n/a')]
         });
-        events.push({
-          id: idBase + '-thought-event',
-          kind: 'thought',
-          summary: textBody,
-          timeLabel,
-          chips: ['attempt ' + (outer.attempt || 'n/a')]
-        });
+        events.push({ id: idBase + '-thought-event', kind: 'thought', summary: textBody, timeLabel, chips: ['attempt ' + (outer.attempt || 'n/a')] });
         if (!taskPrompt && /task|search|goal/i.test(textBody)) {
           taskPrompt = textBody;
         }
@@ -546,29 +1043,30 @@ function normalizeRawResponses(text, fileName, filePath, side) {
           status: state.label,
           statusClass: state.css
         });
-        events.push({
-          id: idBase + '-command-event',
-          kind: 'command',
-          summary: shortMultiline(command, 460),
+        estimateParts.push({ label: 'bash_command fields', text: command });
+        appendPythonScripts(pythonScripts, pythonSeen, command, {
+          idPrefix: side + '-raw-python',
           timeLabel,
-          chips: ['attempt ' + (outer.attempt || 'n/a'), primaryCommand(command)]
+          sourceLabel: 'bash_command',
+          chips: ['attempt ' + (outer.attempt || 'n/a')]
         });
+        events.push({ id: idBase + '-command-event', kind: 'command', summary: shortMultiline(command, 460), timeLabel, chips: ['attempt ' + (outer.attempt || 'n/a'), primaryCommand(command)] });
       }
       if (hasFinal) {
         finalOrder += 1;
         const responseText = shortMultiline(frame.final_response, 520);
         finalResponses.push({ id: idBase + '-final', order: finalOrder, text: responseText, timeLabel });
-        events.push({
-          id: idBase + '-final-event',
-          kind: 'final_response',
-          summary: responseText,
+        estimateParts.push({ label: 'final_response fields', text: String(frame.final_response || '') });
+        appendPythonScripts(pythonScripts, pythonSeen, frame.final_response, {
+          idPrefix: side + '-raw-python',
           timeLabel,
+          sourceLabel: 'final_response',
           chips: ['done=' + Boolean(frame.done)]
         });
+        events.push({ id: idBase + '-final-event', kind: 'final_response', summary: responseText, timeLabel, chips: ['done=' + Boolean(frame.done)] });
       }
     });
   });
-
   const channelFamilies = toBarRows([
     { label: 'thought entries', value: thoughtEntries.length },
     { label: 'command frames', value: commandRuns.length },
@@ -576,12 +1074,11 @@ function normalizeRawResponses(text, fileName, filePath, side) {
     { label: 'outer lines', value: lines.length },
     { label: 'empty frames dropped', value: emptyFrames }
   ]);
-
   return finalizeTrace({
     side,
     kind: 'raw_response_jsonl',
-    formatLabel: 'Raw Response JSONL',
-    description: "Webwright agent's raw_responses.jsonl",
+    formatLabel: 'Webwright Responses JSONL',
+    description: 'Webwright raw_responses.jsonl with embedded thought, bash, and final-response frames.',
     fileName,
     filePath,
     taskPrompt,
@@ -589,8 +1086,10 @@ function normalizeRawResponses(text, fileName, filePath, side) {
     thoughtEntries,
     commandRuns,
     finalResponses,
-    tokenRows: [{ label: 'availability', value: 'not recorded' }],
-    tokenSource: 'attach trajectory.json to enrich tokens',
+    pythonScripts,
+    tokenSourceLabel: 'Estimated from extracted trace text.',
+    tokenEstimateParts: estimateParts,
+    countedFieldLabels: ['raw_text frame.thought', 'raw_text frame.bash_command', 'raw_text frame.final_response'],
     metrics: [
       { label: 'Outer lines', value: numberFormat(lines.length), sub: 'top-level raw_text records' },
       { label: 'Frames', value: numberFormat(extractedFrames), sub: 'embedded JSON frames extracted from raw_text' },
@@ -601,34 +1100,325 @@ function normalizeRawResponses(text, fileName, filePath, side) {
   });
 }
 
+function normalizeTrajectory(text, fileName, filePath, side) {
+  const parsed = safeJsonParse(text);
+  if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.messages)) {
+    throw new Error('Invalid trajectory.json structure');
+  }
+  const events = [];
+  const thoughtEntries = [];
+  const commandRuns = [];
+  const finalResponses = [];
+  const pythonScripts = [];
+  const pythonSeen = new Set();
+  const estimateParts = [];
+  let latestTokens = null;
+  let taskPrompt = '';
+  let thoughtOrder = 0;
+  let commandOrder = 0;
+  let finalOrder = 0;
+  let pendingRun = null;
+  parsed.messages.forEach((message, index) => {
+    const id = side + '-trajectory-' + index;
+    const timeLabel = 'step ' + (index + 1);
+    const role = message.role || 'unknown';
+    const contentText = contentToText(message.content);
+    if (role === 'user') {
+      const observation = normalizeObservation(message);
+      if (observation && pendingRun) {
+        if (observation.command && !pendingRun.command) {
+          pendingRun.command = observation.command;
+          pendingRun.primaryCommand = primaryCommand(observation.command);
+        }
+        pendingRun.exitCode = observation.exitCode;
+        pendingRun.outputPreview = shortMultiline(observation.output, 520);
+        const state = statusFromExit(observation.exitCode, '', observation.output, false);
+        pendingRun.status = state.label;
+        pendingRun.statusClass = state.css;
+        estimateParts.push({ label: 'observation outputs', text: observation.output });
+        events.push({ id, kind: 'observation', summary: shortMultiline(observation.output, 460), timeLabel, chips: observation.exitCode !== null ? ['exit ' + observation.exitCode] : ['observation'] });
+      } else if (contentText) {
+        if (!taskPrompt) {
+          taskPrompt = shortMultiline(contentText, 360);
+        }
+        estimateParts.push({ label: 'user messages', text: contentText });
+        events.push({ id, kind: 'user_message', summary: shortMultiline(contentText, 420), timeLabel, chips: ['user'] });
+      }
+      return;
+    }
+    if (role !== 'assistant') {
+      return;
+    }
+    const extra = message.extra || {};
+    const raw = extra.raw_response && typeof extra.raw_response === 'object' ? extra.raw_response : {};
+    const usage = extra.usage && typeof extra.usage === 'object' ? (extra.usage.cumulative_response || extra.usage.last_response || extra.usage) : null;
+    if (usage && typeof usage.total_tokens === 'number') {
+      latestTokens = usage;
+    }
+    const thoughtText = String(raw.thought || contentText || '').trim();
+    const action = Array.isArray(extra.actions) && extra.actions.length ? extra.actions[0] : null;
+    const commandText = String(raw.bash_command || (action && (action.bash_command || action.command)) || '').trim();
+    const finalText = String(raw.final_response || '').trim();
+    const done = raw.done === true || extra.done === true;
+    if (thoughtText) {
+      thoughtOrder += 1;
+      estimateParts.push({ label: 'assistant thoughts', text: thoughtText });
+      appendPythonScripts(pythonScripts, pythonSeen, thoughtText, {
+        idPrefix: side + '-trajectory-python',
+        timeLabel,
+        sourceLabel: 'assistant thought',
+        chips: [done ? 'done' : 'assistant']
+      });
+      thoughtEntries.push({ id: id + '-thought', order: thoughtOrder, text: shortMultiline(thoughtText, 520), timeLabel, chips: [done ? 'done' : 'assistant'] });
+      events.push({ id: id + '-thought-event', kind: 'thought', summary: shortMultiline(thoughtText, 460), timeLabel, chips: [done ? 'done' : 'assistant'] });
+    }
+    if (commandText) {
+      commandOrder += 1;
+      const run = {
+        id: id + '-command',
+        order: commandOrder,
+        command: commandText,
+        primaryCommand: primaryCommand(commandText),
+        channel: 'bash_command',
+        timeLabel,
+        exitCode: null,
+        outputPreview: '',
+        status: 'started',
+        statusClass: ''
+      };
+      pendingRun = run;
+      commandRuns.push(run);
+      estimateParts.push({ label: 'assistant commands', text: commandText });
+      appendPythonScripts(pythonScripts, pythonSeen, commandText, {
+        idPrefix: side + '-trajectory-python',
+        timeLabel,
+        sourceLabel: 'assistant command',
+        chips: ['assistant', primaryCommand(commandText)]
+      });
+      events.push({ id: id + '-command-event', kind: 'command', summary: shortMultiline(commandText, 460), timeLabel, chips: ['assistant', primaryCommand(commandText)] });
+    }
+    if (finalText) {
+      finalOrder += 1;
+      estimateParts.push({ label: 'assistant final responses', text: finalText });
+      appendPythonScripts(pythonScripts, pythonSeen, finalText, {
+        idPrefix: side + '-trajectory-python',
+        timeLabel,
+        sourceLabel: 'assistant final response',
+        chips: ['done=' + done]
+      });
+      finalResponses.push({ id: id + '-final', order: finalOrder, text: shortMultiline(finalText, 520), timeLabel });
+      events.push({ id: id + '-final-event', kind: 'final_response', summary: shortMultiline(finalText, 460), timeLabel, chips: ['done=' + done] });
+    }
+  });
+  commandRuns.forEach((run) => {
+    if (run.status === 'started') {
+      const state = statusFromExit(run.exitCode, '', run.outputPreview, false);
+      run.status = state.label;
+      run.statusClass = state.css;
+    }
+  });
+  return finalizeTrace({
+    side,
+    kind: 'trajectory_json',
+    formatLabel: 'Trajectory JSON',
+    description: 'Webwright trajectory.json transcript with assistant actions, observations, and usage snapshots.',
+    fileName,
+    filePath,
+    taskPrompt,
+    events,
+    thoughtEntries,
+    commandRuns,
+    finalResponses,
+    pythonScripts,
+    exactTokens: latestTokens,
+    tokenSourceLabel: latestTokens
+      ? 'Exact tokens from usage snapshot.'
+      : 'Estimated from extracted trace text.',
+    tokenEstimateParts: estimateParts,
+    countedFieldLabels: [
+      'messages[].content',
+      'messages[].extra.raw_response.thought',
+      'messages[].extra.raw_response.bash_command',
+      'messages[].extra.raw_response.final_response',
+      'messages[].extra.observation.command_output'
+    ],
+    metrics: [
+      { label: 'Messages', value: numberFormat(parsed.messages.length), sub: 'top-level transcript turns' },
+      { label: 'Thoughts', value: numberFormat(thoughtEntries.length), sub: 'assistant reasoning entries' },
+      { label: 'Commands', value: numberFormat(commandRuns.length), sub: 'assistant bash commands' },
+      { label: 'API calls', value: numberFormat(parsed.info && parsed.info.api_calls), sub: 'info.api_calls from trajectory metadata' }
+    ]
+  });
+}
+
+function normalizeCopilotSessionMarkdown(text, fileName, filePath, side) {
+  const sections = parseMarkdownSections(text);
+  const metadata = extractSessionMetadata(text);
+  const events = [];
+  const thoughtEntries = [];
+  const commandRuns = [];
+  const finalResponses = [];
+  const pythonScripts = [];
+  const pythonSeen = new Set();
+  const estimateParts = [];
+  let taskPrompt = '';
+  let thoughtOrder = 0;
+  let commandOrder = 0;
+  let eventOrder = 0;
+  if (metadata.sessionId || metadata.duration || metadata.started || metadata.exported) {
+    const summary = [
+      metadata.sessionId ? 'session ' + metadata.sessionId : '',
+      metadata.started ? 'started ' + metadata.started : '',
+      metadata.duration ? 'duration ' + metadata.duration : '',
+      metadata.exported ? 'exported ' + metadata.exported : ''
+    ].filter(Boolean).join(' | ');
+    events.push({
+      id: side + '-session-meta',
+      kind: 'info',
+      summary,
+      timeLabel: 'session',
+      chips: ['session metadata']
+    });
+    eventOrder += 1;
+  }
+  sections.forEach((section) => {
+    if (section.type === 'user') {
+      const clean = stripSessionMarkup(section.body);
+      const textBody = shortMultiline(clean, 520);
+      if (!taskPrompt && textBody) {
+        taskPrompt = textBody;
+      }
+      if (clean) {
+        estimateParts.push({ label: 'user sections', text: clean });
+        events.push({ id: side + '-session-user-' + eventOrder, kind: 'user_message', summary: textBody, timeLabel: section.timeLabel, chips: ['user'] });
+        eventOrder += 1;
+      }
+      return;
+    }
+    if (section.type === 'copilot') {
+      const clean = stripSessionMarkup(section.body);
+      if (!clean) {
+        return;
+      }
+      thoughtOrder += 1;
+      estimateParts.push({ label: 'copilot sections', text: clean });
+      appendPythonScripts(pythonScripts, pythonSeen, clean, {
+        idPrefix: side + '-session-python',
+        timeLabel: section.timeLabel,
+        sourceLabel: 'copilot section',
+        chips: ['copilot']
+      });
+      thoughtEntries.push({ id: side + '-session-thought-' + thoughtOrder, order: thoughtOrder, text: shortMultiline(clean, 520), timeLabel: section.timeLabel, chips: ['copilot'] });
+      events.push({ id: side + '-session-copilot-' + eventOrder, kind: 'thought', summary: shortMultiline(clean, 460), timeLabel: section.timeLabel, chips: ['copilot'] });
+      eventOrder += 1;
+      if (/final|done|complete|result/i.test(clean)) {
+        finalResponses.push({ id: side + '-session-final-' + finalResponses.length, order: finalResponses.length + 1, text: shortMultiline(clean, 520), timeLabel: section.timeLabel });
+      }
+      return;
+    }
+    if (section.type === 'tool') {
+      commandOrder += 1;
+      const parsed = parseSessionToolSection(section, side, commandOrder, eventOrder);
+      commandRuns.push(parsed.run);
+      parsed.events.forEach((event) => events.push(event));
+      estimateParts.push(...parsed.estimateParts);
+      parsed.pythonScripts.forEach((script) => {
+        if (pythonSeen.has(script.text)) {
+          return;
+        }
+        pythonSeen.add(script.text);
+        pythonScripts.push(Object.assign({}, script, {
+          id: side + '-session-python-' + (pythonScripts.length + 1),
+          order: pythonScripts.length + 1
+        }));
+      });
+      eventOrder += parsed.events.length;
+      return;
+    }
+    const infoText = stripSessionMarkup(section.body);
+    if (infoText) {
+      events.push({ id: side + '-session-info-' + eventOrder, kind: 'info', summary: shortMultiline(infoText, 420), timeLabel: section.timeLabel, chips: ['info'] });
+      eventOrder += 1;
+    }
+  });
+  const channelFamilies = toBarRows([
+    { label: 'user sections', value: events.filter((event) => event.kind === 'user_message').length },
+    { label: 'copilot sections', value: thoughtEntries.length },
+    { label: 'tool sections', value: commandRuns.length },
+    { label: 'info sections', value: events.filter((event) => event.kind === 'info').length }
+  ]);
+  return finalizeTrace({
+    side,
+    kind: 'copilot_session_md',
+    formatLabel: 'Copilot Session MD',
+    description: 'GitHub Copilot CLI markdown session export with user, copilot, and tool sections.',
+    fileName,
+    filePath,
+    taskPrompt,
+    events,
+    thoughtEntries,
+    commandRuns,
+    finalResponses,
+    pythonScripts,
+    tokenSourceLabel: 'Estimated from extracted trace text.',
+    tokenEstimateParts: estimateParts,
+    countedFieldLabels: ['session header metadata', '### User body text', '### Copilot body text', 'tool titles', '### ✅ tool Arguments blocks', '### ✅ tool commands / outputs'],
+    metrics: [
+      { label: 'Sections', value: numberFormat(sections.length), sub: 'top-level markdown sections' },
+      { label: 'Thoughts', value: numberFormat(thoughtEntries.length), sub: 'copilot narrative blocks' },
+      { label: 'Commands', value: numberFormat(commandRuns.length), sub: 'tool sections mapped to comparable command rows' },
+      { label: 'Finals', value: numberFormat(finalResponses.length), sub: 'copilot blocks that look like terminal summaries' },
+      { label: 'Session duration', value: metadata.duration || 'n/a', sub: metadata.started ? 'started ' + metadata.started : 'header metadata if present' }
+    ],
+    channelFamilies
+  });
+}
+
 function normalizeTrace(text, fileName, filePath, side) {
   const format = detectFormat(text);
   if (!format) {
-    throw new Error('Only Codex JSONL and raw response JSONL are supported here');
+    throw new Error('Supported inputs: Codex JSONL, Webwright Responses JSONL (raw_responses.jsonl), trajectory.json, and Copilot session markdown.');
   }
   if (format === 'codex_jsonl') {
     return normalizeCodex(text, fileName, filePath, side);
   }
-  return normalizeRawResponses(text, fileName, filePath, side);
+  if (format === 'raw_response_jsonl') {
+    return normalizeRawResponses(text, fileName, filePath, side);
+  }
+  if (format === 'trajectory_json') {
+    return normalizeTrajectory(text, fileName, filePath, side);
+  }
+  return normalizeCopilotSessionMarkdown(text, fileName, filePath, side);
 }
 
-const app = Vue.createApp({
+const app = createApp({
   data() {
     return {
       activeView: 'summary',
-      traceTab: 'all',
+      traceTab: 'python',
       dragTarget: null,
       left: null,
       right: null,
       errors: { left: '', right: '' },
-      attachmentErrors: { left: '', right: '' }
+      attachmentErrors: { left: '', right: '' },
+      tokenTarget: 'model:o3',
+      tokenizerStatus: 'Ready.'
     };
   },
   computed: {
     slots() {
       return [
-        { key: 'left', title: 'Trace A', subtitle: 'Load either the raw response JSONL or the Codex JSONL on this side.' },
-        { key: 'right', title: 'Trace B', subtitle: 'Load the other JSONL trace here for direct comparison.' }
+        { key: 'left', title: 'Trace A', subtitle: 'Load Codex JSONL, Webwright Responses JSONL (raw_responses.jsonl), trajectory.json, or Copilot session markdown on this side.' },
+        { key: 'right', title: 'Trace B', subtitle: 'Load a second trace and compare thoughts, commands, token source, and extracted outputs.' }
+      ];
+    },
+    tokenizerOptions() {
+      return [
+        { value: 'model:o3', label: 'o3' },
+        { value: 'model:o3-mini', label: 'o3-mini' },
+        { value: 'model:gpt-4o', label: 'gpt-4o' },
+        { value: 'encoding:o200k_base', label: 'o200k_base' },
+        { value: 'encoding:cl100k_base', label: 'cl100k_base' }
       ];
     },
     bothLoaded() {
@@ -642,6 +1432,7 @@ const app = Vue.createApp({
     },
     detailTabs() {
       return [
+        { label: 'Python Scripts', value: 'python' },
         { label: 'Thoughts', value: 'thoughts' },
         { label: 'Commands', value: 'commands' },
         { label: 'All', value: 'all' }
@@ -652,42 +1443,30 @@ const app = Vue.createApp({
         return [];
       }
       return [
-        {
-          label: 'Format',
-          left: this.left.formatLabel,
-          right: this.right.formatLabel
-        },
-        {
-          label: 'Thought entries',
-          left: numberFormat(this.left.thoughtEntries.length),
-          right: numberFormat(this.right.thoughtEntries.length)
-        },
-        {
-          label: 'Command runs',
-          left: numberFormat(this.left.commandRuns.length),
-          right: numberFormat(this.right.commandRuns.length)
-        },
-        {
-          label: 'Final responses',
-          left: numberFormat(this.left.finalResponses.length),
-          right: numberFormat(this.right.finalResponses.length)
-        },
-        {
-          label: 'Token total',
-          left: tokenRowValue(this.left, 'total'),
-          right: tokenRowValue(this.right, 'total')
-        },
+        { label: 'Format', left: this.left.formatLabel, right: this.right.formatLabel },
+        { label: 'Thought entries', left: numberFormat(this.left.thoughtEntries.length), right: numberFormat(this.right.thoughtEntries.length) },
+        { label: 'Command runs', left: numberFormat(this.left.commandRuns.length), right: numberFormat(this.right.commandRuns.length) },
+        { label: 'Final responses', left: numberFormat(this.left.finalResponses.length), right: numberFormat(this.right.finalResponses.length) },
+        { label: 'Python scripts', left: numberFormat(this.left.pythonScripts.length), right: numberFormat(this.right.pythonScripts.length) },
+        { label: 'Token total', left: this.tokenTotalDisplay(this.left), right: this.tokenTotalDisplay(this.right) },
+        { label: 'Token source', left: this.left.tokenModeLabel, right: this.right.tokenModeLabel },
+        { label: 'Counted fields', left: this.left.countedFieldLabels.join(', '), right: this.right.countedFieldLabels.join(', ') },
         {
           label: 'Top command families',
           left: this.left.commandFamilies.map((row) => row.label + ' ' + row.value).join(', '),
           right: this.right.commandFamilies.map((row) => row.label + ' ' + row.value).join(', ')
         },
-        {
-          label: 'Task hint',
-          left: this.left.taskPrompt || 'n/a',
-          right: this.right.taskPrompt || 'n/a'
-        }
+        { label: 'Task hint', left: this.left.taskPrompt || 'n/a', right: this.right.taskPrompt || 'n/a' }
       ];
+    },
+    tokenizerSelectionLabel() {
+      const selection = getTokenizerSelection(this.tokenTarget);
+      return selection.mode === 'model' ? selection.name + ' -> ' + selection.encoding : selection.encoding;
+    }
+  },
+  watch: {
+    tokenTarget() {
+      this.refreshAllTokens();
     }
   },
   methods: {
@@ -706,8 +1485,33 @@ const app = Vue.createApp({
       this.attachmentErrors[side] = '';
     },
     clearCompanion(side) {
-      this[side] = stripTrajectoryCompanion(this[side]);
+      const trace = this[side];
+      if (!trace || trace.kind !== 'raw_response_jsonl') {
+        return;
+      }
       this.attachmentErrors[side] = '';
+      this[side] = stripTrajectoryCompanion(trace);
+    },
+    tokenTotalDisplay(trace) {
+      if (!trace) {
+        return 'n/a';
+      }
+      if (trace.exactTokens && typeof trace.exactTokens.total_tokens === 'number') {
+        return 'Exact tokens: ' + numberFormat(trace.exactTokens.total_tokens);
+      }
+      if (typeof trace.tokenEstimateTotal === 'number') {
+        return 'Est. output tokens: ~' + numberFormat(trace.tokenEstimateTotal);
+      }
+      if (trace.tokenEstimateError) {
+        return 'Est. output tokens failed';
+      }
+      return 'Estimating output tokens...';
+    },
+    tokenNote(trace) {
+      if (!trace) {
+        return '';
+      }
+      return trace.tokenSourceLabel;
     },
     async handleFileInput(side, event) {
       const file = event.target.files && event.target.files[0];
@@ -715,14 +1519,6 @@ const app = Vue.createApp({
         return;
       }
       await this.loadFile(side, file);
-      event.target.value = '';
-    },
-    async handleCompanionInput(side, event) {
-      const file = event.target.files && event.target.files[0];
-      if (!file) {
-        return;
-      }
-      await this.loadCompanionFile(side, file);
       event.target.value = '';
     },
     async handleDrop(side, event) {
@@ -733,34 +1529,82 @@ const app = Vue.createApp({
       }
       await this.loadFile(side, file);
     },
+    async handleCompanionInput(side, event) {
+      const file = event.target.files && event.target.files[0];
+      if (!file) {
+        return;
+      }
+      this.attachmentErrors[side] = '';
+      try {
+        const trace = this[side];
+        if (!trace || trace.kind !== 'raw_response_jsonl') {
+          throw new Error('Attach trajectory.json only to a Webwright Responses JSONL trace (raw_responses.jsonl).');
+        }
+        const text = await file.text();
+        const companion = extractTrajectoryUsage(text, file.name);
+        const updatedTrace = applyTrajectoryCompanion(trace, companion);
+        await this.enrichTraceTokens(updatedTrace);
+        this[side] = updatedTrace;
+      } catch (error) {
+        this.attachmentErrors[side] = error && error.message ? error.message : 'Failed to attach trajectory.json';
+      } finally {
+        event.target.value = '';
+      }
+    },
+    async enrichTraceTokens(trace) {
+      const selection = getTokenizerSelection(this.tokenTarget);
+      trace.tokenSelectionLabel = selection.mode === 'model' ? selection.name + ' / ' + selection.encoding : selection.encoding;
+      trace.tokenEstimateError = '';
+      if (!trace.tokenEstimateParts.length) {
+        trace.tokenBasisRows = [];
+        if (!trace.exactTokens) {
+          trace.tokenRows = [{ label: 'availability', value: 'no text fields to estimate' }];
+        }
+        return trace;
+      }
+      try {
+        this.tokenizerStatus = 'Counting tokens with ' + selection.encoding + '...';
+        const encoder = await loadEncoder(selection.encoding);
+        const basisRows = trace.tokenEstimateParts.map((part) => ({ label: part.label, value: encoder.encode(part.text).length })).filter((row) => row.value > 0);
+        trace.tokenBasisRows = toBarRows(basisRows, 8);
+        trace.tokenEstimateTotal = basisRows.reduce((sum, row) => sum + row.value, 0);
+        trace.tokenModeLabel = trace.exactTokens ? 'exact' : 'estimate';
+        trace.tokenRows = trace.exactTokens
+          ? tokenRowsFromTotals(trace.exactTokens)
+          : [
+              { label: 'basis', value: 'estimated' },
+              { label: 'encoding', value: selection.encoding },
+              { label: 'est. output tokens', value: '~' + numberFormat(trace.tokenEstimateTotal) }
+            ];
+        this.tokenizerStatus = 'Ready.';
+      } catch (error) {
+        trace.tokenEstimateError = error && error.message ? error.message : 'Failed to estimate tokens';
+        trace.tokenBasisRows = [];
+        if (!trace.exactTokens) {
+          trace.tokenRows = [{ label: 'availability', value: trace.tokenEstimateError }];
+        }
+        this.tokenizerStatus = trace.tokenEstimateError;
+      }
+      return trace;
+    },
+    async refreshAllTokens() {
+      const traces = [this.left, this.right].filter(Boolean);
+      for (const trace of traces) {
+        await this.enrichTraceTokens(trace);
+      }
+    },
     async loadFile(side, file) {
       this.errors[side] = '';
       this.attachmentErrors[side] = '';
       try {
         const text = await file.text();
-        this[side] = normalizeTrace(text, file.name, file.path || '', side);
+        const trace = normalizeTrace(text, file.name, file.path || '', side);
+        await this.enrichTraceTokens(trace);
+        this[side] = trace;
       } catch (error) {
         this[side] = null;
         this.errors[side] = error && error.message ? error.message : 'Failed to parse file';
       }
-    },
-    async loadCompanionFile(side, file) {
-      this.attachmentErrors[side] = '';
-      const trace = this[side];
-      if (!trace || trace.kind !== 'raw_response_jsonl') {
-        this.attachmentErrors[side] = 'Attach trajectory.json only after loading a raw response JSONL file';
-        return;
-      }
-      try {
-        const text = await file.text();
-        const companion = extractTrajectoryUsage(text, file.name);
-        this[side] = applyTrajectoryCompanion(trace, companion);
-      } catch (error) {
-        this.attachmentErrors[side] = error && error.message ? error.message : 'Failed to parse trajectory.json';
-      }
-    },
-    tokenRowValue(trace, label) {
-      return tokenRowValue(trace, label);
     },
     filteredEvents(trace) {
       if (!trace) {
