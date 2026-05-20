@@ -1,0 +1,879 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Experimental Token Counter</title>
+  <style>
+    :root {
+      --bg: #eef3f5;
+      --panel: #ffffff;
+      --panel-soft: #f7fafb;
+      --line: #d5e0e5;
+      --line-strong: #bcccd4;
+      --text: #102028;
+      --muted: #5e7380;
+      --accent: #0b766e;
+      --accent-soft: #def5f2;
+      --shadow: 0 16px 40px rgba(16, 32, 40, 0.08);
+      --radius: 18px;
+      --mono: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+      --sans: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: var(--sans);
+      color: var(--text);
+      background:
+        radial-gradient(circle at top left, rgba(11, 118, 110, 0.08), transparent 22%),
+        linear-gradient(180deg, #f9fbfc 0%, var(--bg) 100%);
+    }
+
+    button,
+    select,
+    textarea,
+    input {
+      font: inherit;
+    }
+
+    .page {
+      max-width: 1440px;
+      margin: 0 auto;
+      padding: 28px 24px 40px;
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1.2fr) auto;
+      gap: 18px;
+      align-items: end;
+      margin-bottom: 18px;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: var(--accent-soft);
+      color: var(--accent);
+      font: 700 11px var(--mono);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    h1 {
+      margin: 12px 0 0;
+      font-size: clamp(30px, 5vw, 44px);
+      line-height: 1;
+      letter-spacing: -0.05em;
+    }
+
+    .lede {
+      max-width: 74ch;
+      margin-top: 12px;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.7;
+    }
+
+    .hero-note {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: rgba(255, 255, 255, 0.72);
+      padding: 14px 16px;
+      box-shadow: var(--shadow);
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.6;
+      max-width: 320px;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(360px, 0.95fr) minmax(420px, 1.05fr);
+      gap: 18px;
+      align-items: start;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+    }
+
+    .panel-body {
+      padding: 18px;
+    }
+
+    .stack {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .controls-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .field label,
+    .section-title,
+    .stat-label,
+    .subhead {
+      font: 700 11px var(--mono);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    select,
+    textarea {
+      width: 100%;
+      border: 1px solid var(--line-strong);
+      border-radius: 14px;
+      background: var(--panel-soft);
+      color: var(--text);
+    }
+
+    select {
+      min-height: 46px;
+      padding: 0 14px;
+    }
+
+    textarea {
+      min-height: 420px;
+      resize: vertical;
+      padding: 16px;
+      line-height: 1.6;
+    }
+
+    .button-row,
+    .meta-row,
+    .token-badges {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .button,
+    .button-label {
+      appearance: none;
+      border: 1px solid var(--line-strong);
+      background: #fff;
+      color: var(--text);
+      border-radius: 999px;
+      padding: 10px 14px;
+      cursor: pointer;
+      font-weight: 600;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      transition: border-color 0.15s ease, transform 0.15s ease, background 0.15s ease;
+    }
+
+    .button:hover,
+    .button-label:hover {
+      border-color: var(--accent);
+      transform: translateY(-1px);
+    }
+
+    .button.primary,
+    .button-label.primary {
+      background: var(--accent);
+      color: #fff;
+      border-color: var(--accent);
+    }
+
+    .button-label input {
+      display: none;
+    }
+
+    .status {
+      min-height: 20px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .status.error {
+      color: #b42318;
+    }
+
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .stat-card {
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: var(--panel-soft);
+    }
+
+    .stat-value {
+      margin-top: 10px;
+      font-size: clamp(24px, 4vw, 34px);
+      line-height: 1;
+      letter-spacing: -0.05em;
+      font-weight: 800;
+    }
+
+    .stat-sub {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .section {
+      padding-top: 6px;
+      border-top: 1px solid var(--line);
+    }
+
+    .section:first-child {
+      padding-top: 0;
+      border-top: 0;
+    }
+
+    .token-surface,
+    .line-surface {
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: var(--panel-soft);
+      padding: 14px;
+    }
+
+    .token-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(88px, 1fr));
+      gap: 10px;
+      margin-top: 12px;
+      max-height: 340px;
+      overflow: auto;
+    }
+
+    .token-chip {
+      padding: 10px 10px 12px;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      background: #fff;
+    }
+
+    .token-index {
+      color: var(--muted);
+      font: 700 10px var(--mono);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .token-id {
+      margin-top: 8px;
+      font: 700 14px var(--mono);
+      color: var(--text);
+      word-break: break-word;
+    }
+
+    .token-preview {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .line-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-top: 12px;
+      max-height: 320px;
+      overflow: auto;
+    }
+
+    .line-row {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      gap: 12px;
+      align-items: start;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: #fff;
+      padding: 12px;
+    }
+
+    .line-num,
+    .line-tokens,
+    .mono {
+      font-family: var(--mono);
+    }
+
+    .line-num,
+    .line-tokens {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .line-text {
+      font-size: 13px;
+      line-height: 1.55;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--muted);
+      font: 700 11px var(--mono);
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    .code-note {
+      padding: 12px 14px;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      background: var(--panel-soft);
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.6;
+    }
+
+    @media (max-width: 1120px) {
+      .layout,
+      .hero,
+      .stats-grid,
+      .controls-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .hero-note {
+        max-width: none;
+      }
+    }
+
+    @media (max-width: 760px) {
+      .page {
+        padding: 18px 14px 26px;
+      }
+
+      textarea {
+        min-height: 320px;
+      }
+
+      .stats-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header class="hero">
+      <div>
+        <div class="eyebrow">Experimental Tool</div>
+        <h1>Token Counter</h1>
+        <div class="lede">
+          Count tokens in-browser with <span class="mono">js-tiktoken</span> loaded from a CDN. Pick a model preset or a raw encoding, paste text, and inspect token IDs plus per-line token distribution.
+        </div>
+      </div>
+      <div class="hero-note">
+        Uses <span class="mono">js-tiktoken/lite</span> via ESM CDN import and fetches rank data from the public tokenizer CDN at runtime. No build step, no server-side counting.
+      </div>
+    </header>
+
+    <div class="layout">
+      <section class="panel">
+        <div class="panel-body stack">
+          <div class="controls-grid">
+            <div class="field">
+              <label for="targetSelect">Tokenizer Target</label>
+              <select id="targetSelect">
+                <optgroup label="Model presets">
+                  <option value="model:gpt-4.1">GPT-4.1</option>
+                  <option value="model:gpt-4o" selected>GPT-4o</option>
+                  <option value="model:gpt-4o-mini">GPT-4o mini</option>
+                  <option value="model:o1">o1</option>
+                  <option value="model:o3">o3</option>
+                  <option value="model:o3-mini">o3-mini</option>
+                  <option value="model:gpt-4-turbo">GPT-4 Turbo</option>
+                  <option value="model:gpt-4">GPT-4</option>
+                  <option value="model:gpt-3.5-turbo">GPT-3.5 Turbo</option>
+                  <option value="model:text-embedding-3-large">text-embedding-3-large</option>
+                  <option value="model:code-davinci-002">code-davinci-002</option>
+                </optgroup>
+                <optgroup label="Raw encodings">
+                  <option value="encoding:o200k_base">o200k_base</option>
+                  <option value="encoding:cl100k_base">cl100k_base</option>
+                  <option value="encoding:p50k_base">p50k_base</option>
+                  <option value="encoding:r50k_base">r50k_base</option>
+                  <option value="encoding:gpt2">gpt2</option>
+                </optgroup>
+              </select>
+            </div>
+            <div class="field">
+              <label for="previewCount">Preview Token Count</label>
+              <select id="previewCount">
+                <option value="24">24 tokens</option>
+                <option value="48" selected>48 tokens</option>
+                <option value="96">96 tokens</option>
+                <option value="192">192 tokens</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="button-row">
+            <label class="button-label">
+              Load text file
+              <input id="fileInput" type="file" accept=".txt,.md,.json,.jsonl,.py,.ts,.js,.html,.css,.csv">
+            </label>
+            <button id="sampleButton" class="button">Insert sample</button>
+            <button id="clearButton" class="button">Clear</button>
+            <button id="copySummaryButton" class="button primary">Copy summary</button>
+          </div>
+
+          <div class="field">
+            <label for="sourceText">Source Text</label>
+            <textarea id="sourceText" spellcheck="false" placeholder="Paste text to count tokens. You can also load a file from disk."></textarea>
+          </div>
+
+          <div id="status" class="status">Ready.</div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-body stack">
+          <div class="stats-grid">
+            <article class="stat-card">
+              <div class="stat-label">Tokenizer</div>
+              <div id="activeEncoding" class="stat-value">o200k_base</div>
+              <div id="activeMode" class="stat-sub">Model preset: GPT-4o</div>
+            </article>
+            <article class="stat-card">
+              <div class="stat-label">Total Tokens</div>
+              <div id="tokenCount" class="stat-value">0</div>
+              <div id="tokenDensity" class="stat-sub">0 chars per token</div>
+            </article>
+            <article class="stat-card">
+              <div class="stat-label">Characters</div>
+              <div id="charCount" class="stat-value">0</div>
+              <div id="wordCount" class="stat-sub">0 words</div>
+            </article>
+            <article class="stat-card">
+              <div class="stat-label">Lines</div>
+              <div id="lineCount" class="stat-value">0</div>
+              <div id="byteCount" class="stat-sub">0 bytes UTF-8</div>
+            </article>
+          </div>
+
+          <section class="section stack">
+            <div>
+              <div class="section-title">Selection Summary</div>
+              <div id="selectionSummary" class="code-note">No text loaded yet.</div>
+            </div>
+            <div class="token-badges">
+              <div id="firstTokenBadge" class="pill">first token n/a</div>
+              <div id="lastTokenBadge" class="pill">last token n/a</div>
+              <div id="maxLineBadge" class="pill">heaviest line n/a</div>
+            </div>
+          </section>
+
+          <section class="section stack">
+            <div>
+              <div class="section-title">Token Preview</div>
+              <div class="subhead">First tokens with decoded fragments</div>
+            </div>
+            <div class="token-surface">
+              <div id="tokenPreviewMeta" class="meta-row"></div>
+              <div id="tokenGrid" class="token-grid"></div>
+            </div>
+          </section>
+
+          <section class="section stack">
+            <div>
+              <div class="section-title">Per-Line Breakdown</div>
+              <div class="subhead">Useful for prompt templates and long instructions</div>
+            </div>
+            <div class="line-surface">
+              <div id="lineMeta" class="meta-row"></div>
+              <div id="lineList" class="line-list"></div>
+            </div>
+          </section>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <script type="module">
+    import { Tiktoken } from "https://esm.sh/js-tiktoken/lite";
+
+    const MODEL_TO_ENCODING = {
+      "gpt-4.1": "o200k_base",
+      "gpt-4o": "o200k_base",
+      "gpt-4o-mini": "o200k_base",
+      "o1": "o200k_base",
+      "o3": "o200k_base",
+      "o3-mini": "o200k_base",
+      "gpt-4-turbo": "cl100k_base",
+      "gpt-4": "cl100k_base",
+      "gpt-3.5-turbo": "cl100k_base",
+      "text-embedding-3-large": "cl100k_base",
+      "code-davinci-002": "p50k_base"
+    };
+
+    const SAMPLE_TEXT = [
+      "System: You are a careful coding agent.",
+      "User: Read the attached trace files, summarize the command sequence, and estimate token cost.",
+      "Assistant: I will inspect the normalized command runs first, then compare the token snapshots."
+    ].join("\n");
+
+    const encodingCache = new Map();
+    let renderRequestId = 0;
+
+    const elements = {
+      targetSelect: document.getElementById("targetSelect"),
+      previewCount: document.getElementById("previewCount"),
+      fileInput: document.getElementById("fileInput"),
+      sampleButton: document.getElementById("sampleButton"),
+      clearButton: document.getElementById("clearButton"),
+      copySummaryButton: document.getElementById("copySummaryButton"),
+      sourceText: document.getElementById("sourceText"),
+      status: document.getElementById("status"),
+      activeEncoding: document.getElementById("activeEncoding"),
+      activeMode: document.getElementById("activeMode"),
+      tokenCount: document.getElementById("tokenCount"),
+      tokenDensity: document.getElementById("tokenDensity"),
+      charCount: document.getElementById("charCount"),
+      wordCount: document.getElementById("wordCount"),
+      lineCount: document.getElementById("lineCount"),
+      byteCount: document.getElementById("byteCount"),
+      selectionSummary: document.getElementById("selectionSummary"),
+      firstTokenBadge: document.getElementById("firstTokenBadge"),
+      lastTokenBadge: document.getElementById("lastTokenBadge"),
+      maxLineBadge: document.getElementById("maxLineBadge"),
+      tokenPreviewMeta: document.getElementById("tokenPreviewMeta"),
+      tokenGrid: document.getElementById("tokenGrid"),
+      lineMeta: document.getElementById("lineMeta"),
+      lineList: document.getElementById("lineList")
+    };
+
+    function formatNumber(value) {
+      return new Intl.NumberFormat().format(value || 0);
+    }
+
+    function setStatus(message, isError = false) {
+      elements.status.textContent = message;
+      elements.status.className = isError ? "status error" : "status";
+    }
+
+    function getSelection() {
+      const value = elements.targetSelect.value;
+      const [mode, name] = value.split(":");
+      const encoding = mode === "model" ? MODEL_TO_ENCODING[name] || "o200k_base" : name;
+      return { mode, name, encoding };
+    }
+
+    async function loadEncoder(encoding) {
+      if (encodingCache.has(encoding)) {
+        return encodingCache.get(encoding);
+      }
+      setStatus(`Loading ${encoding} ranks...`);
+      const response = await fetch(`https://tiktoken.pages.dev/js/${encoding}.json`);
+      if (!response.ok) {
+        throw new Error(`Failed to load ${encoding} ranks from CDN`);
+      }
+      const ranks = await response.json();
+      const encoder = new Tiktoken(ranks);
+      encodingCache.set(encoding, encoder);
+      return encoder;
+    }
+
+    function utf8ByteLength(text) {
+      return new TextEncoder().encode(text).length;
+    }
+
+    function wordCount(text) {
+      const matches = text.trim().match(/\S+/g);
+      return matches ? matches.length : 0;
+    }
+
+    function safeFragment(text) {
+      if (!text) {
+        return "";
+      }
+      return text
+        .replace(/\r/g, "\\r")
+        .replace(/\n/g, "\\n\n")
+        .replace(/\t/g, "\\t");
+    }
+
+    function clearChildren(node) {
+      while (node.firstChild) {
+        node.removeChild(node.firstChild);
+      }
+    }
+
+    function renderTokenPreview(tokens, encoder, limit) {
+      clearChildren(elements.tokenGrid);
+      clearChildren(elements.tokenPreviewMeta);
+
+      const shown = tokens.slice(0, limit);
+      const meta = document.createElement("div");
+      meta.className = "pill";
+      meta.textContent = `showing ${shown.length} of ${tokens.length} tokens`;
+      elements.tokenPreviewMeta.appendChild(meta);
+
+      if (!shown.length) {
+        const empty = document.createElement("div");
+        empty.className = "code-note";
+        empty.textContent = "No tokens to preview.";
+        elements.tokenGrid.appendChild(empty);
+        return;
+      }
+
+      shown.forEach((token, index) => {
+        const chip = document.createElement("article");
+        chip.className = "token-chip";
+
+        const tokenIndex = document.createElement("div");
+        tokenIndex.className = "token-index";
+        tokenIndex.textContent = `token ${index + 1}`;
+
+        const tokenId = document.createElement("div");
+        tokenId.className = "token-id";
+        tokenId.textContent = String(token);
+
+        const tokenPreview = document.createElement("div");
+        tokenPreview.className = "token-preview";
+        let fragment = "";
+        try {
+          fragment = encoder.decode([token]);
+        } catch (error) {
+          fragment = "";
+        }
+        tokenPreview.textContent = fragment ? safeFragment(fragment) : "<no preview>";
+
+        chip.appendChild(tokenIndex);
+        chip.appendChild(tokenId);
+        chip.appendChild(tokenPreview);
+        elements.tokenGrid.appendChild(chip);
+      });
+    }
+
+    function renderLineBreakdown(text, encoder) {
+      clearChildren(elements.lineList);
+      clearChildren(elements.lineMeta);
+
+      const lines = text.split(/\n/);
+      const lineStats = lines.map((line, index) => {
+        const tokenCount = line ? encoder.encode(line).length : 0;
+        return {
+          index: index + 1,
+          text: line,
+          tokenCount
+        };
+      });
+
+      const totalNonEmpty = lineStats.filter((line) => line.text.length > 0).length;
+      const heaviest = lineStats.reduce((best, current) => current.tokenCount > best.tokenCount ? current : best, { index: 0, tokenCount: 0, text: "" });
+
+      const linePill = document.createElement("div");
+      linePill.className = "pill";
+      linePill.textContent = `${formatNumber(totalNonEmpty)} non-empty lines`;
+      elements.lineMeta.appendChild(linePill);
+
+      const avgPill = document.createElement("div");
+      avgPill.className = "pill";
+      avgPill.textContent = `${lineStats.length ? (lineStats.reduce((sum, line) => sum + line.tokenCount, 0) / lineStats.length).toFixed(1) : "0.0"} avg tokens per line`;
+      elements.lineMeta.appendChild(avgPill);
+
+      if (!lineStats.length) {
+        const empty = document.createElement("div");
+        empty.className = "code-note";
+        empty.textContent = "No lines to inspect.";
+        elements.lineList.appendChild(empty);
+        return { heaviest };
+      }
+
+      lineStats.forEach((line) => {
+        const row = document.createElement("article");
+        row.className = "line-row";
+
+        const num = document.createElement("div");
+        num.className = "line-num";
+        num.textContent = `L${line.index}`;
+
+        const textCell = document.createElement("div");
+        textCell.className = "line-text";
+        textCell.textContent = line.text || " ";
+
+        const count = document.createElement("div");
+        count.className = "line-tokens";
+        count.textContent = `${line.tokenCount} tok`;
+
+        row.appendChild(num);
+        row.appendChild(textCell);
+        row.appendChild(count);
+        elements.lineList.appendChild(row);
+      });
+
+      return { heaviest };
+    }
+
+    function summaryText(selection, text, tokens) {
+      const chars = text.length;
+      const words = wordCount(text);
+      return [
+        `mode=${selection.mode}`,
+        `target=${selection.name}`,
+        `encoding=${selection.encoding}`,
+        `tokens=${tokens.length}`,
+        `chars=${chars}`,
+        `words=${words}`,
+        `bytes=${utf8ByteLength(text)}`
+      ].join(" | ");
+    }
+
+    async function render() {
+      const requestId = ++renderRequestId;
+      const text = elements.sourceText.value;
+      const selection = getSelection();
+
+      elements.activeEncoding.textContent = selection.encoding;
+      elements.activeMode.textContent = selection.mode === "model"
+        ? `Model preset: ${selection.name}`
+        : `Raw encoding: ${selection.name}`;
+
+      if (!text) {
+        elements.tokenCount.textContent = "0";
+        elements.tokenDensity.textContent = "0 chars per token";
+        elements.charCount.textContent = "0";
+        elements.wordCount.textContent = "0 words";
+        elements.lineCount.textContent = "0";
+        elements.byteCount.textContent = "0 bytes UTF-8";
+        elements.selectionSummary.textContent = "No text loaded yet.";
+        elements.firstTokenBadge.textContent = "first token n/a";
+        elements.lastTokenBadge.textContent = "last token n/a";
+        elements.maxLineBadge.textContent = "heaviest line n/a";
+        clearChildren(elements.tokenPreviewMeta);
+        clearChildren(elements.tokenGrid);
+        clearChildren(elements.lineMeta);
+        clearChildren(elements.lineList);
+        setStatus("Ready.");
+        return;
+      }
+
+      try {
+        const encoder = await loadEncoder(selection.encoding);
+        if (requestId !== renderRequestId) {
+          return;
+        }
+
+        const tokens = encoder.encode(text);
+        const chars = text.length;
+        const lines = text.split(/\n/).length;
+        const previewLimit = Number(elements.previewCount.value) || 48;
+        const density = tokens.length ? (chars / tokens.length).toFixed(2) : "0.00";
+
+        elements.tokenCount.textContent = formatNumber(tokens.length);
+        elements.tokenDensity.textContent = `${density} chars per token`;
+        elements.charCount.textContent = formatNumber(chars);
+        elements.wordCount.textContent = `${formatNumber(wordCount(text))} words`;
+        elements.lineCount.textContent = formatNumber(lines);
+        elements.byteCount.textContent = `${formatNumber(utf8ByteLength(text))} bytes UTF-8`;
+        elements.selectionSummary.textContent = summaryText(selection, text, tokens);
+        elements.firstTokenBadge.textContent = tokens.length ? `first token ${tokens[0]}` : "first token n/a";
+        elements.lastTokenBadge.textContent = tokens.length ? `last token ${tokens[tokens.length - 1]}` : "last token n/a";
+
+        renderTokenPreview(tokens, encoder, previewLimit);
+        const { heaviest } = renderLineBreakdown(text, encoder);
+        elements.maxLineBadge.textContent = heaviest && heaviest.index
+          ? `heaviest line L${heaviest.index} (${heaviest.tokenCount} tok)`
+          : "heaviest line n/a";
+
+        setStatus(`Counted ${formatNumber(tokens.length)} tokens with ${selection.encoding}.`);
+      } catch (error) {
+        if (requestId !== renderRequestId) {
+          return;
+        }
+        setStatus(error instanceof Error ? error.message : "Failed to count tokens.", true);
+      }
+    }
+
+    async function readFile(file) {
+      const text = await file.text();
+      elements.sourceText.value = text;
+      setStatus(`Loaded ${file.name}.`);
+      await render();
+    }
+
+    async function copySummary() {
+      const selection = getSelection();
+      const text = elements.sourceText.value;
+      let encoder;
+      try {
+        encoder = await loadEncoder(selection.encoding);
+      } catch (error) {
+        setStatus(error instanceof Error ? error.message : "Failed to load tokenizer.", true);
+        return;
+      }
+      const tokens = encoder.encode(text);
+      const summary = summaryText(selection, text, tokens);
+      try {
+        await navigator.clipboard.writeText(summary);
+        setStatus("Copied token summary to clipboard.");
+      } catch (error) {
+        setStatus("Clipboard write failed in this browser context.", true);
+      }
+    }
+
+    elements.targetSelect.addEventListener("change", render);
+    elements.previewCount.addEventListener("change", render);
+    elements.sourceText.addEventListener("input", render);
+    elements.sampleButton.addEventListener("click", async () => {
+      elements.sourceText.value = SAMPLE_TEXT;
+      await render();
+    });
+    elements.clearButton.addEventListener("click", async () => {
+      elements.sourceText.value = "";
+      await render();
+    });
+    elements.copySummaryButton.addEventListener("click", copySummary);
+    elements.fileInput.addEventListener("change", async (event) => {
+      const file = event.target.files && event.target.files[0];
+      if (!file) {
+        return;
+      }
+      await readFile(file);
+      event.target.value = "";
+    });
+
+    render();
+  </script>
+</body>
+</html>

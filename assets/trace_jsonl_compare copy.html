@@ -1,0 +1,1419 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Trace JSONL Compare</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Public+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #edf2f4;
+      --panel: #ffffff;
+      --panel-2: #f6f9fa;
+      --panel-3: #e9f1f3;
+      --line: #d4dee3;
+      --line-strong: #b7c6cc;
+      --text: #132127;
+      --muted: #5c7078;
+      --accent: #0f766e;
+      --good: #166534;
+      --good-soft: #dcfce7;
+      --warn: #b45309;
+      --warn-soft: #ffedd5;
+      --bad: #b91c1c;
+      --bad-soft: #fee2e2;
+      --shadow: 0 12px 32px rgba(19, 33, 39, 0.08);
+      --radius: 18px;
+      --mono: "IBM Plex Mono", ui-monospace, monospace;
+      --sans: "Public Sans", "Segoe UI", sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: var(--sans);
+      color: var(--text);
+      background:
+        radial-gradient(circle at top left, rgba(15, 118, 110, 0.08), transparent 24%),
+        linear-gradient(180deg, #f8fbfb 0%, var(--bg) 100%);
+    }
+
+    button,
+    input,
+    textarea,
+    select {
+      font: inherit;
+    }
+
+    .shell {
+      min-height: 100vh;
+    }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      backdrop-filter: blur(16px);
+      background: rgba(248, 251, 251, 0.9);
+      border-bottom: 1px solid rgba(183, 198, 204, 0.7);
+    }
+
+    .topbar-inner,
+    .upload-rail,
+    .content {
+      max-width: 1480px;
+      margin: 0 auto;
+      padding-left: 24px;
+      padding-right: 24px;
+    }
+
+    .topbar-inner {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 18px;
+      align-items: center;
+      padding-top: 16px;
+      padding-bottom: 16px;
+    }
+
+    .brand-title {
+      margin: 0;
+      font-size: 24px;
+      line-height: 1;
+      letter-spacing: -0.04em;
+    }
+
+    .brand-copy {
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+      max-width: 78ch;
+    }
+
+    .tab-strip,
+    .filter-strip,
+    .badge-row,
+    .button-row,
+    .metric-badges,
+    .event-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .tab,
+    .toggle,
+    .button,
+    .button-label {
+      appearance: none;
+      border: 1px solid var(--line-strong);
+      background: #fff;
+      color: var(--text);
+      border-radius: 999px;
+      padding: 9px 14px;
+      cursor: pointer;
+      transition: transform 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+      font-size: 13px;
+      font-weight: 600;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .tab:hover,
+    .toggle:hover,
+    .button:hover,
+    .button-label:hover {
+      border-color: var(--accent);
+      transform: translateY(-1px);
+    }
+
+    .tab.active,
+    .toggle.active,
+    .button.primary,
+    .button-label.primary {
+      background: var(--accent);
+      color: #fff;
+      border-color: var(--accent);
+    }
+
+    .button-label input {
+      display: none;
+    }
+
+    .upload-rail {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+      padding-top: 16px;
+      padding-bottom: 16px;
+    }
+
+    .upload-card,
+    .panel,
+    .summary-card,
+    .trace-card,
+    .mini-card,
+    .event,
+    .command-run,
+    .thought-entry {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+    }
+
+    .upload-card {
+      padding: 16px;
+      min-height: 154px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .upload-head,
+    .trace-card-head,
+    .run-head,
+    .event-head,
+    .thought-head,
+    .panel-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: start;
+    }
+
+    .upload-title,
+    .panel-title,
+    .trace-name,
+    .section-title {
+      margin: 0;
+      line-height: 1.2;
+    }
+
+    .upload-title {
+      font-size: 16px;
+    }
+
+    .panel-title {
+      font-size: 18px;
+    }
+
+    .trace-name {
+      font-size: 18px;
+    }
+
+    .upload-subtitle,
+    .muted,
+    .summary-copy,
+    .event-time,
+    .trace-file {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.55;
+    }
+
+    .upload-subtitle {
+      margin-top: 5px;
+    }
+
+    .upload-body {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 12px;
+      border: 1.5px dashed var(--line-strong);
+      border-radius: 16px;
+      padding: 16px;
+      background: var(--panel-2);
+    }
+
+    .upload-file {
+      font-weight: 700;
+      font-size: 15px;
+      word-break: break-word;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 6px 10px;
+      font: 700 11px var(--mono);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      background: var(--panel-3);
+      color: var(--muted);
+    }
+
+    .badge.good {
+      color: var(--good);
+      background: var(--good-soft);
+      border-color: #b9e6c7;
+    }
+
+    .badge.warn {
+      color: var(--warn);
+      background: var(--warn-soft);
+      border-color: #f6cf9e;
+    }
+
+    .badge.bad {
+      color: var(--bad);
+      background: var(--bad-soft);
+      border-color: #f3baba;
+    }
+
+    .content {
+      padding-top: 8px;
+      padding-bottom: 28px;
+    }
+
+    .panel,
+    .summary-card,
+    .trace-card,
+    .mini-card {
+      padding: 16px;
+      margin-bottom: 18px;
+      box-shadow: none;
+    }
+
+    .summary-grid,
+    .trace-grid,
+    .pair-grid,
+    .trace-pane-grid,
+    .metric-grid {
+      display: grid;
+      gap: 18px;
+    }
+
+    .summary-grid,
+    .trace-grid,
+    .pair-grid,
+    .trace-pane-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .metric-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      margin-top: 12px;
+    }
+
+    .metric {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--panel-2);
+      padding: 12px;
+    }
+
+    .metric-label {
+      color: var(--muted);
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin-bottom: 8px;
+    }
+
+    .metric-value {
+      font-size: 25px;
+      line-height: 1;
+      font-weight: 800;
+      letter-spacing: -0.04em;
+    }
+
+    .metric-sub {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .compare-table,
+    .command-table,
+    .thought-table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    .compare-table th,
+    .compare-table td,
+    .command-table th,
+    .command-table td,
+    .thought-table th,
+    .thought-table td {
+      text-align: left;
+      border-top: 1px solid var(--line);
+      padding: 11px 10px;
+      vertical-align: top;
+      font-size: 13px;
+    }
+
+    .compare-table th,
+    .command-table th,
+    .thought-table th {
+      color: var(--muted);
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .mono {
+      font-family: var(--mono);
+      font-size: 12px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      line-height: 1.55;
+    }
+
+    .task-box {
+      margin-top: 12px;
+      padding: 12px;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      background: var(--panel-2);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    .task-box strong {
+      display: block;
+      margin-bottom: 6px;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+    }
+
+    .run-list,
+    .event-list,
+    .thought-list,
+    .section-stack {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    .run-list,
+    .event-list,
+    .thought-list {
+      max-height: 520px;
+      overflow: auto;
+      padding-right: 2px;
+    }
+
+    .command-run,
+    .event,
+    .thought-entry {
+      padding: 12px;
+      background: var(--panel-2);
+      box-shadow: none;
+    }
+
+    .run-title,
+    .event-kind,
+    .thought-title {
+      font: 700 11px var(--mono);
+      color: var(--accent);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .run-command,
+    .event-summary,
+    .thought-body {
+      font-size: 13px;
+      line-height: 1.55;
+      white-space: pre-wrap;
+      word-break: break-word;
+      margin-top: 8px;
+    }
+
+    .run-output {
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.55;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-family: var(--mono);
+    }
+
+    .bar-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    .bar-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 12px;
+      align-items: center;
+    }
+
+    .bar-wrap {
+      margin-top: 6px;
+      height: 8px;
+      border-radius: 999px;
+      background: #e6eef1;
+      overflow: hidden;
+    }
+
+    .bar {
+      height: 100%;
+      border-radius: 999px;
+      background: linear-gradient(90deg, #0f766e, #14b8a6);
+    }
+
+    .empty-state {
+      padding: 44px 22px;
+      text-align: center;
+      color: var(--muted);
+      border: 1.5px dashed var(--line-strong);
+      border-radius: 18px;
+      background: var(--panel-2);
+    }
+
+    @media (max-width: 1160px) {
+      .topbar-inner,
+      .upload-rail,
+      .summary-grid,
+      .trace-grid,
+      .pair-grid,
+      .trace-pane-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .topbar-inner {
+        align-items: start;
+      }
+
+    }
+
+    @media (max-width: 760px) {
+      .topbar-inner,
+      .upload-rail,
+      .content {
+        padding-left: 14px;
+        padding-right: 14px;
+      }
+
+      .metric-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div id="app" class="shell">
+    <header class="topbar">
+      <div class="topbar-inner">
+        <div>
+          <h1 class="brand-title">Webwright Trajectory Comparison</h1>
+          <div class="brand-copy">
+            Compare Codex + Webwright skill trajectory file with Webwright agent's responses.
+          </div>
+        </div>
+        <nav class="tab-strip">
+          <button class="tab" :class="{ active: activeView === 'summary' }" @click="activeView = 'summary'">Summary View</button>
+          <button class="tab" :class="{ active: activeView === 'traces' }" @click="activeView = 'traces'">Detailed Trace</button>
+        </nav>
+      </div>
+    </header>
+
+    <section class="upload-rail">
+      <article
+        v-for="slot in slots"
+        :key="slot.key"
+        class="upload-card"
+        @dragenter.prevent="dragTarget = slot.key"
+        @dragover.prevent="dragTarget = slot.key"
+        @dragleave.prevent="dragTarget = null"
+        @drop.prevent="handleDrop(slot.key, $event)"
+      >
+        <div class="upload-head">
+          <div>
+            <h2 class="upload-title">{{ slot.title }}</h2>
+            <div class="upload-subtitle">{{ slot.subtitle }}</div>
+          </div>
+          <div class="badge-row" v-if="traceBySide(slot.key)">
+            <span class="badge good">{{ traceBySide(slot.key).formatLabel }}</span>
+            <span class="badge">commands {{ traceBySide(slot.key).summary.commandRuns }}</span>
+          </div>
+        </div>
+
+        <div class="upload-body" :style="dragTarget === slot.key ? 'border-color: var(--accent); background: #f1fbf9;' : ''">
+          <template v-if="traceBySide(slot.key)">
+            <div class="upload-file">{{ traceBySide(slot.key).fileName }}</div>
+            <div class="upload-subtitle">{{ traceBySide(slot.key).description }}</div>
+            <div class="badge-row">
+              <span class="badge">thoughts {{ traceBySide(slot.key).summary.thoughts }}</span>
+              <span class="badge">commands {{ traceBySide(slot.key).summary.commands }}</span>
+              <span class="badge">finals {{ traceBySide(slot.key).summary.finalResponses }}</span>
+            </div>
+            <div class="button-row">
+              <label class="button-label primary">
+                Replace file
+                <input type="file" accept=".jsonl,.txt" @change="handleFileInput(slot.key, $event)">
+              </label>
+              <button class="button" @click="clearTrace(slot.key)">Clear</button>
+            </div>
+          </template>
+          <template v-else>
+            <div class="upload-file">Drop a JSONL trace here</div>
+            <div class="upload-subtitle">
+              Use one side for raw response JSONL and the other for Codex JSONL. The app does not accept trajectory JSON.
+            </div>
+            <div class="button-row">
+              <label class="button-label primary">
+                Choose file
+                <input type="file" accept=".jsonl,.txt" @change="handleFileInput(slot.key, $event)">
+              </label>
+            </div>
+          </template>
+          <div class="badge-row" v-if="errorBySide(slot.key)">
+            <span class="badge bad">{{ errorBySide(slot.key) }}</span>
+          </div>
+        </div>
+      </article>
+    </section>
+
+    <main class="content">
+      <section v-if="!bothLoaded" class="panel">
+        <div class="empty-state">
+          Load two JSONL traces to compare extracted thought entries, shell commands, and end-state outputs in a shared format.
+        </div>
+      </section>
+
+      <template v-else>
+        <section v-if="activeView === 'summary'">
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <h2 class="panel-title">Comparison Matrix</h2>
+                <div class="muted">Raw response frames and Codex events are compared after extraction into comparable thought and command records.</div>
+              </div>
+            </div>
+            <table class="compare-table">
+              <thead>
+                <tr>
+                  <th>Metric</th>
+                  <th>{{ leftTrace.fileName }}</th>
+                  <th>{{ rightTrace.fileName }}</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="row in comparisonRows" :key="row.label">
+                  <td>{{ row.label }}</td>
+                  <td class="mono">{{ row.left }}</td>
+                  <td class="mono">{{ row.right }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <h2 class="panel-title">Pattern Breakdown</h2>
+                <div class="muted">Top command families and frame categories in each JSONL trace.</div>
+              </div>
+            </div>
+            <div class="trace-pane-grid">
+              <article class="mini-card" v-for="trace in [leftTrace, rightTrace]" :key="trace.side + '-bars'">
+                <h3>{{ trace.fileName }}</h3>
+                <div class="bar-list">
+                  <div class="bar-row" v-for="row in trace.commandFamilies" :key="trace.side + '-cmd-' + row.label">
+                    <div>
+                      <div class="mono">{{ row.label }}</div>
+                      <div class="bar-wrap"><div class="bar" :style="{ width: row.width + '%' }"></div></div>
+                    </div>
+                    <div class="mono">{{ row.value }}</div>
+                  </div>
+                </div>
+                <div class="bar-list">
+                  <div class="bar-row" v-for="row in trace.channelFamilies" :key="trace.side + '-channel-' + row.label">
+                    <div>
+                      <div class="mono">{{ row.label }}</div>
+                      <div class="bar-wrap"><div class="bar" :style="{ width: row.width + '%' }"></div></div>
+                    </div>
+                    <div class="mono">{{ row.value }}</div>
+                  </div>
+                </div>
+              </article>
+            </div>
+          </section>
+        </section>
+
+        <section v-else>
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <h2 class="panel-title">Detailed Trace</h2>
+                <div class="muted">Switch between thoughts, commands, and the combined event trail.</div>
+              </div>
+              <div class="tab-strip">
+                <button
+                  v-for="tab in detailTabs"
+                  :key="tab.value"
+                  class="tab"
+                  :class="{ active: traceTab === tab.value }"
+                  @click="traceTab = tab.value"
+                >
+                  {{ tab.label }}
+                </button>
+              </div>
+            </div>
+          </section>
+
+          <div class="trace-grid">
+            <article class="trace-card" v-for="trace in [leftTrace, rightTrace]" :key="trace.side + '-trace'">
+              <div class="trace-card-head">
+                <div>
+                  <h3 class="trace-name">{{ trace.fileName }}</h3>
+                  <div class="trace-file">{{ trace.filePath || 'Uploaded from local disk' }}</div>
+                </div>
+                <div class="badge-row">
+                  <span class="badge good">{{ trace.formatLabel }}</span>
+                </div>
+              </div>
+
+              <div class="metric-badges" style="margin-top: 12px;">
+                <span class="badge">thoughts {{ trace.summary.thoughts }}</span>
+                <span class="badge">commands {{ trace.summary.commandRuns }}</span>
+                <span class="badge">finals {{ trace.summary.finalResponses }}</span>
+              </div>
+
+              <div v-if="traceTab === 'thoughts'" class="thought-list">
+                <article class="thought-entry" v-for="thought in trace.thoughtEntries" :key="trace.side + '-thought-' + thought.id">
+                  <div class="thought-head">
+                    <div class="thought-title">thought {{ thought.order }}</div>
+                    <div class="event-time">{{ thought.timeLabel }}</div>
+                  </div>
+                  <div class="event-meta">
+                    <span class="badge" v-for="chip in thought.chips" :key="thought.id + '-' + chip">{{ chip }}</span>
+                  </div>
+                  <div class="thought-body">{{ thought.text }}</div>
+                </article>
+              </div>
+
+              <div v-else-if="traceTab === 'commands'" class="run-list">
+                <article class="command-run" v-for="run in trace.commandRuns" :key="trace.side + '-run-' + run.id">
+                  <div class="run-head">
+                    <div class="run-title">command {{ run.order }}</div>
+                    <div class="event-time">{{ run.timeLabel }}</div>
+                  </div>
+                  <div class="run-command mono">{{ run.command }}</div>
+                  <div class="event-meta">
+                    <span class="badge">{{ run.primaryCommand }}</span>
+                    <span class="badge">{{ run.channel }}</span>
+                    <span class="badge" :class="run.statusClass">{{ run.status }}</span>
+                    <span class="badge" v-if="run.exitCode !== null">exit {{ run.exitCode }}</span>
+                  </div>
+                  <div class="run-output" v-if="run.outputPreview">{{ run.outputPreview }}</div>
+                </article>
+              </div>
+
+              <div v-else class="event-list">
+                <article class="event" v-for="event in filteredEvents(trace)" :key="trace.side + '-event-' + event.id">
+                  <div class="event-head">
+                    <div class="event-kind">{{ event.kind }}</div>
+                    <div class="event-time">{{ event.timeLabel }}</div>
+                  </div>
+                  <div class="event-summary">{{ event.summary }}</div>
+                  <div class="event-meta">
+                    <span class="badge" v-for="chip in event.chips" :key="event.id + '-' + chip">{{ chip }}</span>
+                  </div>
+                </article>
+              </div>
+            </article>
+          </div>
+        </section>
+      </template>
+    </main>
+  </div>
+
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <script>
+    function safeJsonParse(text) {
+      try {
+        return JSON.parse(text);
+      } catch (error) {
+        return null;
+      }
+    }
+
+    function shortText(value, limit = 220) {
+      const clean = String(value || '').replace(/\s+/g, ' ').trim();
+      if (!clean) {
+        return '';
+      }
+      return clean.length > limit ? clean.slice(0, limit - 3) + '...' : clean;
+    }
+
+    function shortMultiline(value, limit = 440) {
+      const clean = String(value || '').trim();
+      if (!clean) {
+        return '';
+      }
+      return clean.length > limit ? clean.slice(0, limit - 3) + '...' : clean;
+    }
+
+    function numberFormat(value) {
+      if (value === null || value === undefined || value === '') {
+        return 'n/a';
+      }
+      const number = Number(value);
+      if (!Number.isFinite(number)) {
+        return String(value);
+      }
+      return new Intl.NumberFormat().format(number);
+    }
+
+    function formatTimestamp(value) {
+      if (!value) {
+        return 'n/a';
+      }
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) {
+        return String(value);
+      }
+      return date.toLocaleString();
+    }
+
+    function parseArguments(raw) {
+      if (!raw) {
+        return {};
+      }
+      if (typeof raw === 'object') {
+        return raw;
+      }
+      const parsed = safeJsonParse(raw);
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    }
+
+    function primaryCommand(raw) {
+      const input = String(raw || '').trim();
+      if (!input) {
+        return 'none';
+      }
+      const pieces = input.split(/&&|\|\|/).map((piece) => piece.trim()).filter(Boolean);
+      const target = pieces.find((piece) => !/^cd\s+/.test(piece)) || pieces[0] || input;
+      if (target.startsWith('python - <<')) {
+        return 'python-heredoc';
+      }
+      if (target.startsWith('printf ')) {
+        return 'printf';
+      }
+      const match = target.match(/^([A-Za-z0-9._/-]+)/);
+      return match ? match[1] : shortText(target, 40);
+    }
+
+    function parseExitCode(text) {
+      const match = String(text || '').match(/(?:Return code:|Process exited with code)\s*(-?\d+)/i);
+      return match ? Number(match[1]) : null;
+    }
+
+    function parseSessionId(text) {
+      const match = String(text || '').match(/session(?:\s+ID)?\s+(\d+)/i);
+      return match ? match[1] : '';
+    }
+
+    function statusFromExit(exitCode, sessionId, output, done) {
+      if (exitCode === 0) {
+        return { label: 'ok', css: 'good' };
+      }
+      if (exitCode !== null && exitCode !== 0) {
+        return { label: 'error', css: 'bad' };
+      }
+      if (done === true) {
+        return { label: 'done', css: 'good' };
+      }
+      if (sessionId || /process running/i.test(String(output || ''))) {
+        return { label: 'streaming', css: 'warn' };
+      }
+      return { label: 'unknown', css: '' };
+    }
+
+    function countBy(items, selector) {
+      const counts = new Map();
+      for (const item of items) {
+        const key = selector(item);
+        if (!key) {
+          continue;
+        }
+        counts.set(key, (counts.get(key) || 0) + 1);
+      }
+      return Array.from(counts.entries())
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+        .map(([label, value]) => ({ label, value }));
+    }
+
+    function toBarRows(rows, limit = 6) {
+      const subset = rows.slice(0, limit);
+      const max = subset.reduce((value, row) => Math.max(value, row.value), 0) || 1;
+      return subset.map((row) => ({
+        label: row.label,
+        value: row.value,
+        width: Math.max(8, Math.round((row.value / max) * 100))
+      }));
+    }
+
+    function tokenRowsFromTotals(tokens) {
+      if (!tokens) {
+        return [{ label: 'availability', value: 'n/a' }];
+      }
+      return [
+        { label: 'input', value: numberFormat(tokens.input_tokens) },
+        { label: 'output', value: numberFormat(tokens.output_tokens) },
+        { label: 'reasoning', value: numberFormat(tokens.reasoning_output_tokens) },
+        { label: 'cached', value: numberFormat(tokens.cached_input_tokens) },
+        { label: 'total', value: numberFormat(tokens.total_tokens) }
+      ];
+    }
+
+    function splitConcatenatedJsonObjects(text) {
+      const source = String(text || '');
+      const segments = [];
+      let start = -1;
+      let depth = 0;
+      let inString = false;
+      let escaped = false;
+      for (let index = 0; index < source.length; index += 1) {
+        const char = source[index];
+        if (start === -1) {
+          if (char === '{') {
+            start = index;
+            depth = 1;
+            inString = false;
+            escaped = false;
+          }
+          continue;
+        }
+        if (inString) {
+          if (escaped) {
+            escaped = false;
+          } else if (char === '\\') {
+            escaped = true;
+          } else if (char === '"') {
+            inString = false;
+          }
+          continue;
+        }
+        if (char === '"') {
+          inString = true;
+          continue;
+        }
+        if (char === '{') {
+          depth += 1;
+          continue;
+        }
+        if (char === '}') {
+          depth -= 1;
+          if (depth === 0) {
+            segments.push(source.slice(start, index + 1));
+            start = -1;
+          }
+        }
+      }
+      return segments.map((segment) => safeJsonParse(segment)).filter(Boolean);
+    }
+
+    function detectFormat(text) {
+      const lines = String(text || '').trim().split(/\r?\n/).filter(Boolean);
+      if (!lines.length) {
+        return null;
+      }
+      const first = safeJsonParse(lines[0]);
+      if (!first || typeof first !== 'object') {
+        return null;
+      }
+      if (first.timestamp && first.type) {
+        return 'codex_jsonl';
+      }
+      if (first.event === 'raw_text' && typeof first.raw_text === 'string') {
+        return 'raw_response_jsonl';
+      }
+      return null;
+    }
+
+    function finalizeTrace(base) {
+      const commandFamilies = toBarRows(countBy(base.commandRuns, (run) => run.primaryCommand));
+      const defaultChannelFamilies = toBarRows(countBy(base.events, (event) => event.kind));
+      return {
+        side: base.side,
+        kind: base.kind,
+        formatLabel: base.formatLabel,
+        description: base.description,
+        fileName: base.fileName,
+        filePath: base.filePath,
+        taskPrompt: base.taskPrompt,
+        events: base.events,
+        thoughtEntries: base.thoughtEntries,
+        commandRuns: base.commandRuns,
+        finalResponses: base.finalResponses,
+        tokenRows: base.tokenRows,
+        metrics: base.metrics,
+        commandFamilies,
+        channelFamilies: base.channelFamilies || defaultChannelFamilies,
+        summary: {
+          thoughts: base.thoughtEntries.length,
+          commands: base.commandRuns.length,
+          commandRuns: base.commandRuns.length,
+          finalResponses: base.finalResponses.length,
+          events: base.events.length
+        }
+      };
+    }
+
+    function normalizeCodex(text, fileName, filePath, side) {
+      const lines = text.split(/\r?\n/).filter(Boolean);
+      const entries = [];
+      const callById = new Map();
+      const runByCallId = new Map();
+      const runBySession = new Map();
+      const commandRuns = [];
+      const thoughtEntries = [];
+      const finalResponses = [];
+      const events = [];
+      let latestTokens = null;
+      let thoughtOrder = 0;
+      let commandOrder = 0;
+      let userPrompt = '';
+
+      lines.forEach((line) => {
+        const item = safeJsonParse(line);
+        if (!item || typeof item !== 'object') {
+          return;
+        }
+        entries.push(item);
+        if (item.type === 'event_msg' && item.payload && item.payload.type === 'token_count') {
+          latestTokens = item.payload.info ? item.payload.info.total_token_usage : null;
+        }
+      });
+
+      entries.forEach((item, index) => {
+        const id = side + '-codex-' + index;
+        const timeLabel = formatTimestamp(item.timestamp || '');
+
+        if (item.type === 'event_msg' && item.payload && item.payload.type === 'user_message') {
+          const summary = shortMultiline(item.payload.message, 360);
+          if (!userPrompt) {
+            userPrompt = summary;
+          }
+          events.push({ id, kind: 'user_message', summary, timeLabel, chips: ['user'] });
+          return;
+        }
+
+        if (item.type === 'event_msg' && item.payload && item.payload.type === 'agent_message') {
+          thoughtOrder += 1;
+          const textBody = shortMultiline(item.payload.message, 520);
+          thoughtEntries.push({
+            id,
+            order: thoughtOrder,
+            text: textBody,
+            timeLabel,
+            chips: [item.payload.phase || 'commentary']
+          });
+          events.push({ id, kind: 'thought', summary: textBody, timeLabel, chips: [item.payload.phase || 'commentary'] });
+          if (/final|answer|result/i.test(item.payload.phase || '') && textBody) {
+            finalResponses.push({ id: id + '-final', text: textBody, timeLabel });
+          }
+          return;
+        }
+
+        if (item.type === 'event_msg' && item.payload && item.payload.type === 'token_count') {
+          const total = item.payload.info && item.payload.info.total_token_usage ? item.payload.info.total_token_usage : {};
+          events.push({
+            id,
+            kind: 'token_snapshot',
+            summary: 'total=' + numberFormat(total.total_tokens) + ', input=' + numberFormat(total.input_tokens) + ', output=' + numberFormat(total.output_tokens),
+            timeLabel,
+            chips: ['tokens']
+          });
+          return;
+        }
+
+        if (item.type === 'response_item' && item.payload && item.payload.type === 'function_call') {
+          const args = parseArguments(item.payload.arguments);
+          const tool = item.payload.name || 'unknown';
+          const command = args.cmd || args.command || args.bash_command || '';
+          callById.set(item.payload.call_id, { tool, args, command });
+          if (command) {
+            commandOrder += 1;
+            const run = {
+              id: item.payload.call_id,
+              order: commandOrder,
+              command,
+              primaryCommand: primaryCommand(command),
+              channel: tool,
+              timeLabel,
+              exitCode: null,
+              outputPreview: '',
+              status: 'started',
+              statusClass: ''
+            };
+            commandRuns.push(run);
+            runByCallId.set(item.payload.call_id, run);
+          }
+          events.push({
+            id,
+            kind: 'command',
+            summary: command ? shortMultiline(command, 440) : shortText(JSON.stringify(args), 240),
+            timeLabel,
+            chips: command ? [tool, primaryCommand(command)] : [tool]
+          });
+          return;
+        }
+
+        if (item.type === 'response_item' && item.payload && item.payload.type === 'function_call_output') {
+          const call = callById.get(item.payload.call_id) || {};
+          const outputText = Array.isArray(item.payload.output)
+            ? JSON.stringify(item.payload.output).slice(0, 600)
+            : String(item.payload.output || '');
+          const exitCode = parseExitCode(outputText);
+          const sessionId = parseSessionId(outputText);
+          let run = runByCallId.get(item.payload.call_id) || null;
+          if (!run && call.tool === 'write_stdin' && call.args && call.args.session_id) {
+            run = runBySession.get(String(call.args.session_id)) || null;
+          }
+          if (run) {
+            if (sessionId) {
+              runBySession.set(sessionId, run);
+            }
+            if (exitCode !== null) {
+              run.exitCode = exitCode;
+            }
+            if (outputText) {
+              run.outputPreview = shortMultiline(outputText, 520);
+            }
+            const state = statusFromExit(run.exitCode, sessionId, outputText, false);
+            run.status = state.label;
+            run.statusClass = state.css;
+          }
+          events.push({
+            id,
+            kind: 'tool_result',
+            summary: shortMultiline(outputText, 460),
+            timeLabel,
+            chips: [call.tool || 'tool_result'].concat(exitCode !== null ? ['exit ' + exitCode] : sessionId ? ['session ' + sessionId] : [])
+          });
+        }
+      });
+
+      commandRuns.forEach((run) => {
+        if (run.status === 'started') {
+          const state = statusFromExit(run.exitCode, '', run.outputPreview, false);
+          run.status = state.label;
+          run.statusClass = state.css;
+        }
+      });
+
+      const channelFamilies = toBarRows([
+        { label: 'thought entries', value: thoughtEntries.length },
+        { label: 'command runs', value: commandRuns.length },
+        { label: 'tool results', value: events.filter((event) => event.kind === 'tool_result').length },
+        { label: 'token snapshots', value: events.filter((event) => event.kind === 'token_snapshot').length },
+        { label: 'final responses', value: finalResponses.length }
+      ]);
+
+      return finalizeTrace({
+        side,
+        kind: 'codex_jsonl',
+        formatLabel: 'Codex JSONL',
+        description: "Codex CLI's session .jsonl",
+        fileName,
+        filePath,
+        taskPrompt: userPrompt,
+        events,
+        thoughtEntries,
+        commandRuns,
+        finalResponses,
+        tokenRows: tokenRowsFromTotals(latestTokens),
+        metrics: [
+          { label: 'Events', value: numberFormat(events.length), sub: 'normalized event records' },
+          { label: 'Thoughts', value: numberFormat(thoughtEntries.length), sub: 'agent commentary entries' },
+          { label: 'Commands', value: numberFormat(commandRuns.length), sub: 'shell commands reconstructed from tool calls' },
+          { label: 'Token total', value: latestTokens ? numberFormat(latestTokens.total_tokens) : 'n/a', sub: 'latest token snapshot if present' }
+        ],
+        channelFamilies
+      });
+    }
+
+    function normalizeRawResponses(text, fileName, filePath, side) {
+      const lines = text.split(/\r?\n/).filter(Boolean);
+      const events = [];
+      const thoughtEntries = [];
+      const commandRuns = [];
+      const finalResponses = [];
+      let thoughtOrder = 0;
+      let commandOrder = 0;
+      let finalOrder = 0;
+      let extractedFrames = 0;
+      let emptyFrames = 0;
+      let taskPrompt = '';
+
+      lines.forEach((line, lineIndex) => {
+        const outer = safeJsonParse(line);
+        if (!outer || typeof outer !== 'object') {
+          return;
+        }
+        const timeLabel = formatTimestamp(outer.timestamp || '');
+        if (outer.event !== 'raw_text') {
+          return;
+        }
+        const frames = splitConcatenatedJsonObjects(outer.raw_text);
+        frames.forEach((frame, frameIndex) => {
+          const idBase = side + '-raw-' + lineIndex + '-' + frameIndex;
+          const hasThought = !!String(frame.thought || '').trim();
+          const hasCommand = !!String(frame.bash_command || '').trim();
+          const hasFinal = !!String(frame.final_response || '').trim();
+          if (!hasThought && !hasCommand && !hasFinal) {
+            emptyFrames += 1;
+            return;
+          }
+          extractedFrames += 1;
+          if (hasThought) {
+            thoughtOrder += 1;
+            const textBody = shortMultiline(frame.thought, 520);
+            thoughtEntries.push({
+              id: idBase + '-thought',
+              order: thoughtOrder,
+              text: textBody,
+              timeLabel,
+              chips: ['attempt ' + (outer.attempt || 'n/a')]
+            });
+            events.push({
+              id: idBase + '-thought-event',
+              kind: 'thought',
+              summary: textBody,
+              timeLabel,
+              chips: ['attempt ' + (outer.attempt || 'n/a')]
+            });
+            if (!taskPrompt && /task|search|goal/i.test(textBody)) {
+              taskPrompt = textBody;
+            }
+          }
+          if (hasCommand) {
+            commandOrder += 1;
+            const command = String(frame.bash_command || '').trim();
+            const state = statusFromExit(null, '', '', frame.done === true);
+            commandRuns.push({
+              id: idBase + '-command',
+              order: commandOrder,
+              command,
+              primaryCommand: primaryCommand(command),
+              channel: 'bash_command',
+              timeLabel,
+              exitCode: null,
+              outputPreview: hasFinal ? shortMultiline(frame.final_response, 320) : '',
+              status: state.label,
+              statusClass: state.css
+            });
+            events.push({
+              id: idBase + '-command-event',
+              kind: 'command',
+              summary: shortMultiline(command, 460),
+              timeLabel,
+              chips: ['attempt ' + (outer.attempt || 'n/a'), primaryCommand(command)]
+            });
+          }
+          if (hasFinal) {
+            finalOrder += 1;
+            const responseText = shortMultiline(frame.final_response, 520);
+            finalResponses.push({ id: idBase + '-final', order: finalOrder, text: responseText, timeLabel });
+            events.push({
+              id: idBase + '-final-event',
+              kind: 'final_response',
+              summary: responseText,
+              timeLabel,
+              chips: ['done=' + Boolean(frame.done)]
+            });
+          }
+        });
+      });
+
+      const channelFamilies = toBarRows([
+        { label: 'thought entries', value: thoughtEntries.length },
+        { label: 'command frames', value: commandRuns.length },
+        { label: 'final responses', value: finalResponses.length },
+        { label: 'outer lines', value: lines.length },
+        { label: 'empty frames dropped', value: emptyFrames }
+      ]);
+
+      return finalizeTrace({
+        side,
+        kind: 'raw_response_jsonl',
+        formatLabel: 'Raw Response JSONL',
+        description: "Webwright agent's raw_responses.jsonl",
+        fileName,
+        filePath,
+        taskPrompt,
+        events,
+        thoughtEntries,
+        commandRuns,
+        finalResponses,
+        tokenRows: [{ label: 'availability', value: 'not recorded' }],
+        metrics: [
+          { label: 'Outer lines', value: numberFormat(lines.length), sub: 'top-level raw_text records' },
+          { label: 'Frames', value: numberFormat(extractedFrames), sub: 'embedded JSON frames extracted from raw_text' },
+          { label: 'Thoughts', value: numberFormat(thoughtEntries.length), sub: 'inner thought strings' },
+          { label: 'Commands', value: numberFormat(commandRuns.length), sub: 'inner bash_command strings' }
+        ],
+        channelFamilies
+      });
+    }
+
+    function normalizeTrace(text, fileName, filePath, side) {
+      const format = detectFormat(text);
+      if (!format) {
+        throw new Error('Only Codex JSONL and raw response JSONL are supported here');
+      }
+      if (format === 'codex_jsonl') {
+        return normalizeCodex(text, fileName, filePath, side);
+      }
+      return normalizeRawResponses(text, fileName, filePath, side);
+    }
+
+    const app = Vue.createApp({
+      data() {
+        return {
+          activeView: 'summary',
+          traceTab: 'all',
+          dragTarget: null,
+          left: null,
+          right: null,
+          errors: { left: '', right: '' }
+        };
+      },
+      computed: {
+        slots() {
+          return [
+            { key: 'left', title: 'Trace A', subtitle: 'Load either the raw response JSONL or the Codex JSONL on this side.' },
+            { key: 'right', title: 'Trace B', subtitle: 'Load the other JSONL trace here for direct comparison.' }
+          ];
+        },
+        bothLoaded() {
+          return !!(this.left && this.right);
+        },
+        leftTrace() {
+          return this.left;
+        },
+        rightTrace() {
+          return this.right;
+        },
+        detailTabs() {
+          return [
+            { label: 'Thoughts', value: 'thoughts' },
+            { label: 'Commands', value: 'commands' },
+            { label: 'All', value: 'all' }
+          ];
+        },
+        comparisonRows() {
+          if (!this.bothLoaded) {
+            return [];
+          }
+          return [
+            {
+              label: 'Format',
+              left: this.left.formatLabel,
+              right: this.right.formatLabel,
+              note: 'The page only supports the two JSONL formats that can be normalized into thought and command records.'
+            },
+            {
+              label: 'Thought entries',
+              left: numberFormat(this.left.thoughtEntries.length),
+              right: numberFormat(this.right.thoughtEntries.length),
+              note: 'Raw responses contribute inner `thought` strings. Codex contributes agent commentary messages.'
+            },
+            {
+              label: 'Command runs',
+              left: numberFormat(this.left.commandRuns.length),
+              right: numberFormat(this.right.commandRuns.length),
+              note: 'Raw responses use `bash_command`; Codex uses tool-call arguments that carry command strings.'
+            },
+            {
+              label: 'Final responses',
+              left: numberFormat(this.left.finalResponses.length),
+              right: numberFormat(this.right.finalResponses.length),
+              note: 'Raw responses often serialize explicit `final_response`; Codex may only imply it via commentary.'
+            },
+            {
+              label: 'Top command families',
+              left: this.left.commandFamilies.map((row) => row.label + ' ' + row.value).join(', '),
+              right: this.right.commandFamilies.map((row) => row.label + ' ' + row.value).join(', '),
+              note: 'This helps compare action style rather than absolute transcript size.'
+            },
+            {
+              label: 'Task hint',
+              left: this.left.taskPrompt || 'n/a',
+              right: this.right.taskPrompt || 'n/a',
+              note: 'This is a best-effort extraction from the trace content, not a guaranteed metadata field.'
+            }
+          ];
+        },
+      },
+      methods: {
+        traceBySide(side) {
+          return this[side];
+        },
+        errorBySide(side) {
+          return this.errors[side];
+        },
+        clearTrace(side) {
+          this[side] = null;
+          this.errors[side] = '';
+        },
+        async handleFileInput(side, event) {
+          const file = event.target.files && event.target.files[0];
+          if (!file) {
+            return;
+          }
+          await this.loadFile(side, file);
+          event.target.value = '';
+        },
+        async handleDrop(side, event) {
+          this.dragTarget = null;
+          const file = event.dataTransfer && event.dataTransfer.files && event.dataTransfer.files[0];
+          if (!file) {
+            return;
+          }
+          await this.loadFile(side, file);
+        },
+        async loadFile(side, file) {
+          this.errors[side] = '';
+          try {
+            const text = await file.text();
+            this[side] = normalizeTrace(text, file.name, file.path || '', side);
+          } catch (error) {
+            this[side] = null;
+            this.errors[side] = error && error.message ? error.message : 'Failed to parse file';
+          }
+        },
+        filteredEvents(trace) {
+          if (!trace) {
+            return [];
+          }
+          return trace.events.filter((event) => event.kind !== 'token_snapshot');
+        }
+      }
+    });
+
+    window.__traceJsonlCompareVm = app.mount('#app');
+  </script>
+</body>
+</html>

@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Trace JSONL Compare</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Public+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div id="app" class="shell">
+    <header class="topbar">
+      <div class="topbar-inner">
+        <div>
+          <h1 class="brand-title">Webwright Trajectory Comparison</h1>
+          <div class="brand-copy">
+            Compare Codex + Webwright skill trajectory file with Webwright agent's responses.
+          </div>
+        </div>
+        <nav class="tab-strip">
+          <button class="tab" :class="{ active: activeView === 'summary' }" @click="activeView = 'summary'">Summary View</button>
+          <button class="tab" :class="{ active: activeView === 'traces' }" @click="activeView = 'traces'">Detailed Trace</button>
+        </nav>
+      </div>
+    </header>
+
+    <section class="upload-rail">
+      <article
+        v-for="slot in slots"
+        :key="slot.key"
+        class="upload-card"
+        @dragenter.prevent="dragTarget = slot.key"
+        @dragover.prevent="dragTarget = slot.key"
+        @dragleave.prevent="dragTarget = null"
+        @drop.prevent="handleDrop(slot.key, $event)"
+      >
+        <div class="upload-head">
+          <div>
+            <h2 class="upload-title">{{ slot.title }}</h2>
+            <div class="upload-subtitle">{{ slot.subtitle }}</div>
+          </div>
+          <div class="badge-row" v-if="traceBySide(slot.key)">
+            <span class="badge good">{{ traceBySide(slot.key).formatLabel }}</span>
+            <span class="badge">commands {{ traceBySide(slot.key).summary.commandRuns }}</span>
+          </div>
+        </div>
+
+        <div class="upload-body" :style="dragTarget === slot.key ? 'border-color: var(--accent); background: #f1fbf9;' : ''">
+          <template v-if="traceBySide(slot.key)">
+            <div class="upload-file">{{ traceBySide(slot.key).fileName }}</div>
+            <div class="upload-subtitle">{{ traceBySide(slot.key).description }}</div>
+            <div class="badge-row">
+              <span class="badge">thoughts {{ traceBySide(slot.key).summary.thoughts }}</span>
+              <span class="badge">commands {{ traceBySide(slot.key).summary.commands }}</span>
+              <span class="badge">finals {{ traceBySide(slot.key).summary.finalResponses }}</span>
+            </div>
+            <div class="button-row">
+              <label class="button-label primary">
+                Replace file
+                <input type="file" accept=".jsonl,.txt" @change="handleFileInput(slot.key, $event)">
+              </label>
+              <button class="button" @click="clearTrace(slot.key)">Clear</button>
+            </div>
+          </template>
+          <template v-else>
+            <div class="upload-file">Drop a JSONL trace here</div>
+            <div class="upload-subtitle">
+              Use one side for raw response JSONL and the other for Codex JSONL. The app does not accept trajectory JSON.
+            </div>
+            <div class="button-row">
+              <label class="button-label primary">
+                Choose file
+                <input type="file" accept=".jsonl,.txt" @change="handleFileInput(slot.key, $event)">
+              </label>
+            </div>
+          </template>
+          <div class="badge-row" v-if="errorBySide(slot.key)">
+            <span class="badge bad">{{ errorBySide(slot.key) }}</span>
+          </div>
+        </div>
+      </article>
+    </section>
+
+    <main class="content">
+      <section v-if="!bothLoaded" class="panel">
+        <div class="empty-state">
+          Load two JSONL traces to compare extracted thought entries, shell commands, and end-state outputs in a shared format.
+        </div>
+      </section>
+
+      <template v-else>
+        <section v-if="activeView === 'summary'">
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <h2 class="panel-title">Comparison Matrix</h2>
+                <div class="muted">Raw response frames and Codex events are compared after extraction into comparable thought and command records.</div>
+              </div>
+            </div>
+            <table class="compare-table">
+              <thead>
+                <tr>
+                  <th>Metric</th>
+                  <th>{{ leftTrace.fileName }}</th>
+                  <th>{{ rightTrace.fileName }}</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="row in comparisonRows" :key="row.label">
+                  <td>{{ row.label }}</td>
+                  <td class="mono">{{ row.left }}</td>
+                  <td class="mono">{{ row.right }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <h2 class="panel-title">Pattern Breakdown</h2>
+                <div class="muted">Top command families and frame categories in each JSONL trace.</div>
+              </div>
+            </div>
+            <div class="trace-pane-grid">
+              <article class="mini-card" v-for="trace in [leftTrace, rightTrace]" :key="trace.side + '-bars'">
+                <h3>{{ trace.fileName }}</h3>
+                <div class="bar-list">
+                  <div class="bar-row" v-for="row in trace.commandFamilies" :key="trace.side + '-cmd-' + row.label">
+                    <div>
+                      <div class="mono">{{ row.label }}</div>
+                      <div class="bar-wrap"><div class="bar" :style="{ width: row.width + '%' }"></div></div>
+                    </div>
+                    <div class="mono">{{ row.value }}</div>
+                  </div>
+                </div>
+                <div class="bar-list">
+                  <div class="bar-row" v-for="row in trace.channelFamilies" :key="trace.side + '-channel-' + row.label">
+                    <div>
+                      <div class="mono">{{ row.label }}</div>
+                      <div class="bar-wrap"><div class="bar" :style="{ width: row.width + '%' }"></div></div>
+                    </div>
+                    <div class="mono">{{ row.value }}</div>
+                  </div>
+                </div>
+              </article>
+            </div>
+          </section>
+        </section>
+
+        <section v-else>
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <h2 class="panel-title">Detailed Trace</h2>
+                <div class="muted">Switch between thoughts, commands, and the combined event trail.</div>
+              </div>
+              <div class="tab-strip">
+                <button
+                  v-for="tab in detailTabs"
+                  :key="tab.value"
+                  class="tab"
+                  :class="{ active: traceTab === tab.value }"
+                  @click="traceTab = tab.value"
+                >
+                  {{ tab.label }}
+                </button>
+              </div>
+            </div>
+          </section>
+
+          <div class="trace-grid">
+            <article class="trace-card" v-for="trace in [leftTrace, rightTrace]" :key="trace.side + '-trace'">
+              <div class="trace-card-head">
+                <div>
+                  <h3 class="trace-name">{{ trace.fileName }}</h3>
+                  <div class="trace-file">{{ trace.filePath || 'Uploaded from local disk' }}</div>
+                </div>
+                <div class="badge-row">
+                  <span class="badge good">{{ trace.formatLabel }}</span>
+                </div>
+              </div>
+
+              <div class="metric-badges" style="margin-top: 12px;">
+                <span class="badge">thoughts {{ trace.summary.thoughts }}</span>
+                <span class="badge">commands {{ trace.summary.commandRuns }}</span>
+                <span class="badge">finals {{ trace.summary.finalResponses }}</span>
+              </div>
+
+              <div v-if="traceTab === 'thoughts'" class="thought-list">
+                <article class="thought-entry" v-for="thought in trace.thoughtEntries" :key="trace.side + '-thought-' + thought.id">
+                  <div class="thought-head">
+                    <div class="thought-title">thought {{ thought.order }}</div>
+                    <div class="event-time">{{ thought.timeLabel }}</div>
+                  </div>
+                  <div class="event-meta">
+                    <span class="badge" v-for="chip in thought.chips" :key="thought.id + '-' + chip">{{ chip }}</span>
+                  </div>
+                  <div class="thought-body">{{ thought.text }}</div>
+                </article>
+              </div>
+
+              <div v-else-if="traceTab === 'commands'" class="run-list">
+                <article class="command-run" v-for="run in trace.commandRuns" :key="trace.side + '-run-' + run.id">
+                  <div class="run-head">
+                    <div class="run-title">command {{ run.order }}</div>
+                    <div class="event-time">{{ run.timeLabel }}</div>
+                  </div>
+                  <div class="run-command mono">{{ run.command }}</div>
+                  <div class="event-meta">
+                    <span class="badge">{{ run.primaryCommand }}</span>
+                    <span class="badge">{{ run.channel }}</span>
+                    <span class="badge" :class="run.statusClass">{{ run.status }}</span>
+                    <span class="badge" v-if="run.exitCode !== null">exit {{ run.exitCode }}</span>
+                  </div>
+                  <div class="run-output" v-if="run.outputPreview">{{ run.outputPreview }}</div>
+                </article>
+              </div>
+
+              <div v-else class="event-list">
+                <article class="event" v-for="event in filteredEvents(trace)" :key="trace.side + '-event-' + event.id">
+                  <div class="event-head">
+                    <div class="event-kind">{{ event.kind }}</div>
+                    <div class="event-time">{{ event.timeLabel }}</div>
+                  </div>
+                  <div class="event-summary">{{ event.summary }}</div>
+                  <div class="event-meta">
+                    <span class="badge" v-for="chip in event.chips" :key="event.id + '-' + chip">{{ chip }}</span>
+                  </div>
+                </article>
+              </div>
+            </article>
+          </div>
+        </section>
+      </template>
+    </main>
+  </div>
+
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>
