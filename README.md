@@ -389,6 +389,16 @@ ls ~/.codex/sessions/2026/MONTH/DAY/SESSION_ID.jsonl
 | Cached | 553,344 | 584,960 |
 | Total | 680,296 | 715,328 |
 
+#### Find the cheapest used  8-cylinder bmw made between 2005-2015 and priced from 25,000 to  50,000 dollars with mileage less than 50,000 miles or less.
+
+| Tokens | Webwright Harness | Codex Webwright Skill |
+| --- | ---: | ---: |
+| Input | 913,819 | 3,271,143 |
+| Output | 31,305 | 20,040 |
+| Reasoning | 0 | 4,410 |
+| Cached | 92,032 | 3,081,3440 |
+| Total | 945,124 | 3,291,183 |
+
 Individual runs and results may vary.
 
 ---
