@@ -53,6 +53,10 @@ environment:
   # Match the backup/local-skill behavior: create a fresh task tab on each run
   # instead of inheriting a stale first tab from an older CDP session.
   local_cdp_new_page: true
+  # Align with the normal local_workspace flow: do not inject browser evidence
+  # into every observation unless explicitly requested.
+  capture_observation_aria: false
+  capture_observation_screenshot: false
 
 agent:
   system_template: |
@@ -74,6 +78,7 @@ agent:
     - You should reason internally, then execute one Python step, then inspect the next observation.
     - The live Playwright browser state is persistent across steps. Do not import, launch, or close Playwright yourself; do not close `page`, `context`, `browser`, or `playwright`.
     - Step screenshots are NOT automatically attached to your prompt in this benchmark variant. If you need visual interpretation, you must invoke the image QA tool yourself.
+    - ARIA snapshots and screenshot paths are not injected into each observation by default in this variant. When you need them, print ARIA yourself and save screenshots intentionally.
     - Set `"done": true` only when the task goal is complete and `final_script.py` is the final artifact.
     - NEVER set `"done": true` in the same response as a non-empty `python_code`. Declare done in a SEPARATE response AFTER you have already executed and verified the final state in a prior step.
     - In `thought`, write in detail your observation, reasoning, and next step.

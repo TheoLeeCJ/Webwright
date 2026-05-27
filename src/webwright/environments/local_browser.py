@@ -19,6 +19,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 from pydantic import BaseModel, Field, field_validator
 
 _BROWSER_MODES = {"local_cdp", "local_launch", "local_persistent"}
+_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 _DEFAULT_LOCAL_CDP_URL = "http://127.0.0.1:9222"
 _DEFAULT_LOCAL_CDP_USER_DATA_DIR = Path("~/.cache/webwright/edge-profile")
 _CHROMIUM_EXECUTABLE_CANDIDATES = (
@@ -166,6 +167,8 @@ class LocalBrowserEnvironmentConfig(BaseModel):
     browser_navigation_timeout_ms: int = 30000
     step_execution_timeout_ms: int = 20000
     observation_timeout_ms: int = 5000
+    capture_observation_aria: bool = False
+    capture_observation_screenshot: bool = False
     output_dir: Path = Path("outputs/default")
     user_data_dir: Path = _DEFAULT_LOCAL_CDP_USER_DATA_DIR
     launch_args: list[str] = Field(default_factory=list)
@@ -228,6 +231,14 @@ class LocalBrowserEnvironment:
 
     def _screenshots_dir(self) -> Path:
         return self.config.output_dir / "screenshots"
+
+    def _recent_screenshots(self) -> list[Path]:
+        screenshots_dir = self._screenshots_dir()
+        if not screenshots_dir.exists():
+            return []
+        files = [path for path in screenshots_dir.rglob("*") if path.is_file() and path.suffix.lower() in _IMAGE_SUFFIXES]
+        files.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+        return files
 
     def _steps_dir(self) -> Path:
         return self.config.output_dir / "steps"
@@ -465,7 +476,8 @@ class LocalBrowserEnvironment:
         url = ""
         title = ""
         aria_snapshot = ""
-        screenshot_path: Path | None = None
+        recent_screenshot_paths = self._recent_screenshots()
+        screenshot_path: Path | None = recent_screenshot_paths[0] if recent_screenshot_paths else None
 
         if page is not None:
             try:
@@ -476,17 +488,20 @@ class LocalBrowserEnvironment:
                 title = await page.title()
             except Exception:
                 title = ""
-            try:
-                aria_snapshot = await page.locator("body").aria_snapshot(
-                    timeout=self.config.observation_timeout_ms,
-                )
-            except Exception:
-                aria_snapshot = ""
-            try:
-                screenshot_path = self._screenshots_dir() / f"step_{self._step_index:04d}.png"
-                await page.screenshot(path=str(screenshot_path), full_page=False)
-            except Exception:
-                screenshot_path = None
+            if self.config.capture_observation_aria:
+                try:
+                    aria_snapshot = await page.locator("body").aria_snapshot(
+                        timeout=self.config.observation_timeout_ms,
+                    )
+                except Exception:
+                    aria_snapshot = ""
+            if self.config.capture_observation_screenshot:
+                try:
+                    captured_screenshot_path = self._screenshots_dir() / f"step_{self._step_index:04d}.png"
+                    await page.screenshot(path=str(captured_screenshot_path), full_page=False)
+                    screenshot_path = captured_screenshot_path
+                except Exception:
+                    pass
 
         return {
             "success": success,
