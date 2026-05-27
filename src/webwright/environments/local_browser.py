@@ -67,7 +67,7 @@ def _is_local_cdp_available(cdp_url: str, *, timeout_seconds: float = 0.5) -> bo
 
 
 def _local_cdp_json_url(cdp_url: str, path: str) -> str:
-    return f"{_local_cdp_origin(cdp_url).rstrip('/')}{path}"
+    return f"{cdp_url.rstrip('/')}{path}"
 
 
 def _local_cdp_page_targets(cdp_url: str, *, timeout_seconds: float = 0.5) -> list[dict[str, Any]]:
@@ -502,9 +502,13 @@ class LocalBrowserEnvironment:
         }
 
     def get_template_vars(self, **kwargs) -> dict[str, Any]:
+        output_dir = self.config.output_dir.resolve()
         return {
             "start_url": self.config.start_url or "",
-            "output_dir": str(self.config.output_dir.resolve()),
+            "output_dir": str(output_dir),
+            "workspace_dir": str(output_dir),
+            "task_metadata_path": str(output_dir / "task.json"),
+            "final_script_path": str(output_dir / "final_script.py"),
             "browser_mode": self.config.browser_mode,
             "user_data_dir": str(self.config.user_data_dir),
             **kwargs,

@@ -355,6 +355,136 @@ function extractCodeFences(text) {
   return fences;
 }
 
+function normalizeCodeLanguage(language) {
+  const value = String(language || '').trim().toLowerCase();
+  if (!value) {
+    return '';
+  }
+  if (value === 'sh' || value === 'shell' || value === 'zsh') {
+    return 'bash';
+  }
+  if (value === 'py') {
+    return 'python';
+  }
+  if (value === 'patch') {
+    return 'diff';
+  }
+  return value;
+}
+
+function looksLikeShell(text) {
+  return /(^|\n)\s*(\$ |(?:cd|ls|pwd|cat|rg|sed|find|git|npm|pnpm|yarn|uv|python|python3|bash|sh|chmod|cp|mv|rm)\b)/m.test(String(text || ''));
+}
+
+function inferCodeLanguage(text, fallback = '') {
+  const normalizedFallback = normalizeCodeLanguage(fallback);
+  const source = String(text || '').trim();
+  if (!source) {
+    return normalizedFallback || 'plaintext';
+  }
+  if (normalizedFallback) {
+    return normalizedFallback;
+  }
+  if (/^\*\*\* Begin Patch/m.test(source) || /^\*\*\* (Add|Update|Delete) File:/m.test(source)) {
+    return 'diff';
+  }
+  if (looksLikePython(source)) {
+    return 'python';
+  }
+  if (safeJsonParse(source) !== null) {
+    return 'json';
+  }
+  if (looksLikeShell(source)) {
+    return 'bash';
+  }
+  return 'plaintext';
+}
+
+function makeTextSection(text, label = '') {
+  return { type: 'text', label, text: String(text || '').trim() };
+}
+
+function makeCodeSection(text, language = '', label = '') {
+  return {
+    type: 'code',
+    label,
+    language: inferCodeLanguage(text, language),
+    text: String(text || '').trim()
+  };
+}
+
+function buildRichTextSections(text, options = {}) {
+  const source = String(text || '').trim();
+  if (!source) {
+    return [];
+  }
+  if (options.forceCode) {
+    return [makeCodeSection(source, options.language || '', options.codeLabel || 'Code')];
+  }
+  const sections = [];
+  const regex = /(^|\n)(`{3,})([^\n]*)\n([\s\S]*?)\n\2(?=\n|$)/g;
+  let cursor = 0;
+  let match = regex.exec(source);
+  while (match) {
+    const start = match.index + match[1].length;
+    const before = source.slice(cursor, start).trim();
+    if (before) {
+      sections.push(makeTextSection(before, sections.length ? '' : (options.textLabel || '')));
+    }
+    const language = normalizeCodeLanguage(match[3]);
+    const content = String(match[4] || '').trim();
+    if (content) {
+      sections.push(makeCodeSection(content, language || options.language || '', options.codeLabel || 'Code'));
+    }
+    cursor = regex.lastIndex;
+    match = regex.exec(source);
+  }
+  const tail = source.slice(cursor).trim();
+  if (tail) {
+    sections.push(makeTextSection(tail, sections.length ? '' : (options.textLabel || '')));
+  }
+  if (!sections.length) {
+    if (options.detectCode && (options.language || looksLikePython(source) || looksLikeShell(source) || safeJsonParse(source) !== null)) {
+      return [makeCodeSection(source, options.language || '', options.codeLabel || 'Code')];
+    }
+    return [makeTextSection(source, options.textLabel || '')];
+  }
+  return sections;
+}
+
+function buildCommandSections(command, channel, outputText = '', outputLabel = 'Output') {
+  const sections = [];
+  const commandText = String(command || '').trim();
+  const resultText = String(outputText || '').trim();
+  if (commandText) {
+    sections.push(makeCodeSection(commandText, inferCodeLanguage(commandText, channel), 'Command'));
+  }
+  if (resultText) {
+    sections.push(makeCodeSection(resultText, inferCodeLanguage(resultText), outputLabel));
+  }
+  return sections;
+}
+
+function createDetailEntry({
+  id,
+  kind,
+  kindLabel,
+  summary = '',
+  timeLabel = 'n/a',
+  chips = [],
+  sections = []
+}) {
+  return {
+    id,
+    kind,
+    kindLabel: kindLabel || kind.replace(/_/g, ' '),
+    summary,
+    timeLabel,
+    chips: uniqueStrings(chips),
+    sections: sections.filter((section) => section && String(section.text || '').trim())
+  };
+}
+
 function extractBoldSummary(text) {
   const match = String(text || '').match(/\*\*([^*\n][\s\S]*?)\*\*/);
   return match ? shortText(match[1].trim(), 140) : '';
@@ -466,6 +596,7 @@ function extractPythonFromPatch(text) {
 
 function extractPythonBlocks(text) {
   const blocks = [];
+  const rawText = String(text || '').trim();
   extractCodeFences(text).forEach((fence) => {
     const language = String(fence.language || '').toLowerCase();
     const content = String(fence.content || '').trim();
@@ -478,6 +609,9 @@ function extractPythonBlocks(text) {
   });
   blocks.push(...extractPythonHeredocs(text));
   blocks.push(...extractPythonFromPatch(text));
+  if (rawText && looksLikePython(rawText)) {
+    blocks.push({ title: 'python snippet', text: rawText, sourceLabel: 'python snippet' });
+  }
   const seen = new Set();
   return blocks.filter((block) => {
     const key = String(block.text || '').trim();
@@ -506,11 +640,51 @@ function appendPythonScripts(target, seen, text, options = {}) {
       order,
       title: block.title || options.title || 'Python script ' + order,
       text: scriptText,
+      sections: [makeCodeSection(scriptText, 'python', 'Python')],
       timeLabel: options.timeLabel || 'n/a',
       sourceLabel: options.sourceLabel || block.sourceLabel || '',
       chips: uniqueStrings([options.sourceLabel || block.sourceLabel || 'python'].concat(options.chips || []))
     });
   });
+}
+
+function extractActionPayload(record, action = null) {
+  const source = record && typeof record === 'object' ? record : {};
+  const actionSource = action && typeof action === 'object' ? action : {};
+  const bashCommand = String(source.bash_command || actionSource.bash_command || '').trim();
+  if (bashCommand) {
+    return {
+      text: bashCommand,
+      field: 'bash_command',
+      channel: 'bash_command',
+      estimateLabel: 'bash_command fields'
+    };
+  }
+  const pythonCode = String(source.python_code || actionSource.python_code || '').trim();
+  if (pythonCode) {
+    return {
+      text: pythonCode,
+      field: 'python_code',
+      channel: 'python_code',
+      estimateLabel: 'python_code fields'
+    };
+  }
+  const genericCommand = String(source.command || actionSource.command || '').trim();
+  if (genericCommand) {
+    const looksPython = looksLikePython(genericCommand);
+    return {
+      text: genericCommand,
+      field: 'command',
+      channel: looksPython ? 'python_code' : 'command',
+      estimateLabel: looksPython ? 'python_code fields' : 'command fields'
+    };
+  }
+  return {
+    text: '',
+    field: '',
+    channel: '',
+    estimateLabel: ''
+  };
 }
 
 function extractModelToolPayload(args, fallbackCommand) {
@@ -678,8 +852,10 @@ function parseSessionToolSection(section, side, commandOrder, eventOrder) {
       timeLabel: section.timeLabel,
       exitCode,
       outputPreview: shortMultiline(output, 520),
+      outputText: output,
       status: state.label,
-      statusClass: state.css
+      statusClass: state.css,
+      sections: buildCommandSections(command, section.tool, output)
     },
     events: [
       {
@@ -696,6 +872,26 @@ function parseSessionToolSection(section, side, commandOrder, eventOrder) {
         timeLabel: section.timeLabel,
         chips: [section.tool].concat(exitCode !== null ? ['exit ' + exitCode] : []).concat(extractLargeOutputPath(output) ? ['saved output'] : [])
       }
+    ],
+    detailEntries: [
+      createDetailEntry({
+        id: side + '-session-detail-tool-call-' + commandOrder,
+        kind: 'tool_call',
+        kindLabel: 'Tool Call',
+        summary: section.tool === 'apply_patch' ? (command || plainBody) : shortMultiline(command || plainBody, 460),
+        timeLabel: section.timeLabel,
+        chips: [section.tool, primaryCommand(command || section.tool)].concat(extraChips),
+        sections: buildCommandSections(command || payloadText, section.tool)
+      }),
+      createDetailEntry({
+        id: side + '-session-detail-tool-result-' + commandOrder,
+        kind: 'tool_result',
+        kindLabel: 'Tool Result',
+        summary: shortMultiline(output || plainBody, 460),
+        timeLabel: section.timeLabel,
+        chips: [section.tool].concat(exitCode !== null ? ['exit ' + exitCode] : []).concat(extractLargeOutputPath(output) ? ['saved output'] : []),
+        sections: [makeCodeSection(output || plainBody, inferCodeLanguage(output || plainBody), 'Output')]
+      })
     ],
     estimateParts: [
       title ? { label: 'tool titles', text: title } : null,
@@ -756,6 +952,7 @@ function finalizeTrace(base) {
     commandRuns: base.commandRuns,
     finalResponses: base.finalResponses,
     pythonScripts: base.pythonScripts || [],
+    detailEntries: base.detailEntries || [],
     metrics: base.metrics,
     commandFamilies,
     channelFamilies: base.channelFamilies || defaultChannelFamilies,
@@ -795,6 +992,7 @@ function normalizeCodex(text, fileName, filePath, side) {
   const pythonScripts = [];
   const pythonSeen = new Set();
   const events = [];
+  const detailEntries = [];
   const estimateParts = [];
   let latestTokens = null;
   let thoughtOrder = 0;
@@ -820,12 +1018,28 @@ function normalizeCodex(text, fileName, filePath, side) {
       }
       estimateParts.push({ label: 'user messages', text: String(item.payload.message || '') });
       events.push({ id, kind: 'user_message', summary, timeLabel, chips: ['user'] });
+      detailEntries.push(createDetailEntry({
+        id: id + '-detail',
+        kind: 'user_message',
+        kindLabel: 'User',
+        summary,
+        timeLabel,
+        chips: ['user'],
+        sections: buildRichTextSections(item.payload.message, { textLabel: 'Prompt' })
+      }));
       return;
     }
     if (item.type === 'event_msg' && item.payload && item.payload.type === 'agent_message') {
       thoughtOrder += 1;
       const textBody = shortMultiline(item.payload.message, 520);
-      thoughtEntries.push({ id, order: thoughtOrder, text: textBody, timeLabel, chips: [item.payload.phase || 'commentary'] });
+      thoughtEntries.push({
+        id,
+        order: thoughtOrder,
+        text: textBody,
+        timeLabel,
+        chips: [item.payload.phase || 'commentary'],
+        sections: buildRichTextSections(item.payload.message, { textLabel: 'Reasoning', detectCode: true })
+      });
       estimateParts.push({ label: 'agent messages', text: String(item.payload.message || '') });
       appendPythonScripts(pythonScripts, pythonSeen, item.payload.message, {
         idPrefix: side + '-codex-python',
@@ -834,6 +1048,15 @@ function normalizeCodex(text, fileName, filePath, side) {
         chips: [item.payload.phase || 'commentary']
       });
       events.push({ id, kind: 'thought', summary: textBody, timeLabel, chips: [item.payload.phase || 'commentary'] });
+      detailEntries.push(createDetailEntry({
+        id: id + '-detail',
+        kind: 'thought',
+        kindLabel: 'Thought',
+        summary: textBody,
+        timeLabel,
+        chips: [item.payload.phase || 'commentary'],
+        sections: buildRichTextSections(item.payload.message, { textLabel: 'Reasoning', detectCode: true })
+      }));
       if (/final|answer|result/i.test(item.payload.phase || '') && textBody) {
         finalResponses.push({ id: id + '-final', order: finalResponses.length + 1, text: textBody, timeLabel });
       }
@@ -869,7 +1092,9 @@ function normalizeCodex(text, fileName, filePath, side) {
           outputPreview: '',
           sessionId: '',
           status: 'started',
-          statusClass: ''
+          statusClass: '',
+          outputText: '',
+          sections: buildCommandSections(command, tool)
         };
         commandRuns.push(run);
         runByCallId.set(item.payload.call_id, run);
@@ -890,6 +1115,17 @@ function normalizeCodex(text, fileName, filePath, side) {
         timeLabel,
         chips: command ? [tool, primaryCommand(command)] : [tool]
       });
+      detailEntries.push(createDetailEntry({
+        id: id + '-detail',
+        kind: 'tool_call',
+        kindLabel: 'Tool Call',
+        summary: command ? shortMultiline(command, 420) : shortText(JSON.stringify(args), 240),
+        timeLabel,
+        chips: command ? [tool, primaryCommand(command)] : [tool],
+        sections: command
+          ? buildCommandSections(command, tool)
+          : [makeCodeSection(JSON.stringify(args, null, 2), 'json', 'Arguments')]
+      }));
       return;
     }
     if (item.type === 'response_item' && item.payload && item.payload.type === 'function_call_output') {
@@ -911,6 +1147,8 @@ function normalizeCodex(text, fileName, filePath, side) {
         }
         if (outputText) {
           run.outputPreview = shortMultiline(outputText, 520);
+          run.outputText = outputText;
+          run.sections = buildCommandSections(run.command, run.channel, outputText);
         }
         const state = statusFromExit(run.exitCode, sessionId, outputText, false);
         run.status = state.label;
@@ -926,6 +1164,15 @@ function normalizeCodex(text, fileName, filePath, side) {
         timeLabel,
         chips: [call.tool || 'tool_result'].concat(exitCode !== null ? ['exit ' + exitCode] : sessionId ? ['session ' + sessionId] : [])
       });
+      detailEntries.push(createDetailEntry({
+        id: id + '-detail',
+        kind: 'tool_result',
+        kindLabel: 'Tool Result',
+        summary: shortMultiline(outputText, 460),
+        timeLabel,
+        chips: [call.tool || 'tool_result'].concat(exitCode !== null ? ['exit ' + exitCode] : sessionId ? ['session ' + sessionId] : []),
+        sections: [makeCodeSection(outputText, inferCodeLanguage(outputText), 'Output')]
+      }));
     }
   });
   commandRuns.forEach((run) => {
@@ -955,6 +1202,7 @@ function normalizeCodex(text, fileName, filePath, side) {
     commandRuns,
     finalResponses,
     pythonScripts,
+    detailEntries,
     exactTokens: latestTokens,
     tokenSourceLabel: latestTokens
       ? 'Exact tokens from token_count snapshot.'
@@ -984,6 +1232,7 @@ function normalizeRawResponses(text, fileName, filePath, side) {
   const finalResponses = [];
   const pythonScripts = [];
   const pythonSeen = new Set();
+  const detailEntries = [];
   const estimateParts = [];
   let thoughtOrder = 0;
   let commandOrder = 0;
@@ -1003,8 +1252,9 @@ function normalizeRawResponses(text, fileName, filePath, side) {
     const frames = splitConcatenatedJsonObjects(outer.raw_text);
     frames.forEach((frame, frameIndex) => {
       const idBase = side + '-raw-' + lineIndex + '-' + frameIndex;
+      const actionPayload = extractActionPayload(frame);
       const hasThought = !!String(frame.thought || '').trim();
-      const hasCommand = !!String(frame.bash_command || '').trim();
+      const hasCommand = !!actionPayload.text;
       const hasFinal = !!String(frame.final_response || '').trim();
       if (!hasThought && !hasCommand && !hasFinal) {
         emptyFrames += 1;
@@ -1014,7 +1264,14 @@ function normalizeRawResponses(text, fileName, filePath, side) {
       if (hasThought) {
         thoughtOrder += 1;
         const textBody = shortMultiline(frame.thought, 520);
-        thoughtEntries.push({ id: idBase + '-thought', order: thoughtOrder, text: textBody, timeLabel, chips: ['attempt ' + (outer.attempt || 'n/a')] });
+        thoughtEntries.push({
+          id: idBase + '-thought',
+          order: thoughtOrder,
+          text: textBody,
+          timeLabel,
+          chips: ['attempt ' + (outer.attempt || 'n/a')],
+          sections: buildRichTextSections(frame.thought, { textLabel: 'Reasoning', detectCode: true })
+        });
         estimateParts.push({ label: 'thought fields', text: String(frame.thought || '') });
         appendPythonScripts(pythonScripts, pythonSeen, frame.thought, {
           idPrefix: side + '-raw-python',
@@ -1023,34 +1280,54 @@ function normalizeRawResponses(text, fileName, filePath, side) {
           chips: ['attempt ' + (outer.attempt || 'n/a')]
         });
         events.push({ id: idBase + '-thought-event', kind: 'thought', summary: textBody, timeLabel, chips: ['attempt ' + (outer.attempt || 'n/a')] });
+        detailEntries.push(createDetailEntry({
+          id: idBase + '-thought-detail',
+          kind: 'thought',
+          kindLabel: 'Thought',
+          summary: textBody,
+          timeLabel,
+          chips: ['attempt ' + (outer.attempt || 'n/a')],
+          sections: buildRichTextSections(frame.thought, { textLabel: 'Reasoning', detectCode: true })
+        }));
         if (!taskPrompt && /task|search|goal/i.test(textBody)) {
           taskPrompt = textBody;
         }
       }
       if (hasCommand) {
         commandOrder += 1;
-        const command = String(frame.bash_command || '').trim();
+        const command = actionPayload.text;
         const state = statusFromExit(null, '', '', frame.done === true);
         commandRuns.push({
           id: idBase + '-command',
           order: commandOrder,
           command,
           primaryCommand: primaryCommand(command),
-          channel: 'bash_command',
+          channel: actionPayload.channel,
           timeLabel,
           exitCode: null,
           outputPreview: hasFinal ? shortMultiline(frame.final_response, 320) : '',
+          outputText: hasFinal ? String(frame.final_response || '').trim() : '',
           status: state.label,
-          statusClass: state.css
+          statusClass: state.css,
+          sections: buildCommandSections(command, actionPayload.channel, hasFinal ? String(frame.final_response || '') : '', hasFinal ? 'Result' : 'Output')
         });
-        estimateParts.push({ label: 'bash_command fields', text: command });
+        estimateParts.push({ label: actionPayload.estimateLabel, text: command });
         appendPythonScripts(pythonScripts, pythonSeen, command, {
           idPrefix: side + '-raw-python',
           timeLabel,
-          sourceLabel: 'bash_command',
+          sourceLabel: actionPayload.field || actionPayload.channel || 'command',
           chips: ['attempt ' + (outer.attempt || 'n/a')]
         });
         events.push({ id: idBase + '-command-event', kind: 'command', summary: shortMultiline(command, 460), timeLabel, chips: ['attempt ' + (outer.attempt || 'n/a'), primaryCommand(command)] });
+        detailEntries.push(createDetailEntry({
+          id: idBase + '-command-detail',
+          kind: 'command',
+          kindLabel: 'Command',
+          summary: shortMultiline(command, 460),
+          timeLabel,
+          chips: ['attempt ' + (outer.attempt || 'n/a'), primaryCommand(command)],
+          sections: buildCommandSections(command, actionPayload.channel)
+        }));
       }
       if (hasFinal) {
         finalOrder += 1;
@@ -1064,6 +1341,15 @@ function normalizeRawResponses(text, fileName, filePath, side) {
           chips: ['done=' + Boolean(frame.done)]
         });
         events.push({ id: idBase + '-final-event', kind: 'final_response', summary: responseText, timeLabel, chips: ['done=' + Boolean(frame.done)] });
+        detailEntries.push(createDetailEntry({
+          id: idBase + '-final-detail',
+          kind: 'final_response',
+          kindLabel: 'Final Response',
+          summary: responseText,
+          timeLabel,
+          chips: ['done=' + Boolean(frame.done)],
+          sections: buildRichTextSections(frame.final_response, { textLabel: 'Response', detectCode: true })
+        }));
       }
     });
   });
@@ -1087,14 +1373,15 @@ function normalizeRawResponses(text, fileName, filePath, side) {
     commandRuns,
     finalResponses,
     pythonScripts,
+    detailEntries,
     tokenSourceLabel: 'Estimated from extracted trace text.',
     tokenEstimateParts: estimateParts,
-    countedFieldLabels: ['raw_text frame.thought', 'raw_text frame.bash_command', 'raw_text frame.final_response'],
+    countedFieldLabels: ['raw_text frame.thought', 'raw_text frame.bash_command', 'raw_text frame.python_code', 'raw_text frame.final_response'],
     metrics: [
       { label: 'Outer lines', value: numberFormat(lines.length), sub: 'top-level raw_text records' },
       { label: 'Frames', value: numberFormat(extractedFrames), sub: 'embedded JSON frames extracted from raw_text' },
       { label: 'Thoughts', value: numberFormat(thoughtEntries.length), sub: 'inner thought strings' },
-      { label: 'Commands', value: numberFormat(commandRuns.length), sub: 'inner bash_command strings' }
+      { label: 'Commands', value: numberFormat(commandRuns.length), sub: 'inner action strings' }
     ],
     channelFamilies
   });
@@ -1111,6 +1398,7 @@ function normalizeTrajectory(text, fileName, filePath, side) {
   const finalResponses = [];
   const pythonScripts = [];
   const pythonSeen = new Set();
+  const detailEntries = [];
   const estimateParts = [];
   let latestTokens = null;
   let taskPrompt = '';
@@ -1132,17 +1420,37 @@ function normalizeTrajectory(text, fileName, filePath, side) {
         }
         pendingRun.exitCode = observation.exitCode;
         pendingRun.outputPreview = shortMultiline(observation.output, 520);
+        pendingRun.outputText = observation.output;
         const state = statusFromExit(observation.exitCode, '', observation.output, false);
         pendingRun.status = state.label;
         pendingRun.statusClass = state.css;
+        pendingRun.sections = buildCommandSections(pendingRun.command, pendingRun.channel, observation.output);
         estimateParts.push({ label: 'observation outputs', text: observation.output });
         events.push({ id, kind: 'observation', summary: shortMultiline(observation.output, 460), timeLabel, chips: observation.exitCode !== null ? ['exit ' + observation.exitCode] : ['observation'] });
+        detailEntries.push(createDetailEntry({
+          id: id + '-observation-detail',
+          kind: 'observation',
+          kindLabel: 'Observation',
+          summary: shortMultiline(observation.output, 460),
+          timeLabel,
+          chips: observation.exitCode !== null ? ['exit ' + observation.exitCode] : ['observation'],
+          sections: [makeCodeSection(observation.output, inferCodeLanguage(observation.output), 'Output')]
+        }));
       } else if (contentText) {
         if (!taskPrompt) {
           taskPrompt = shortMultiline(contentText, 360);
         }
         estimateParts.push({ label: 'user messages', text: contentText });
         events.push({ id, kind: 'user_message', summary: shortMultiline(contentText, 420), timeLabel, chips: ['user'] });
+        detailEntries.push(createDetailEntry({
+          id: id + '-detail',
+          kind: 'user_message',
+          kindLabel: 'User',
+          summary: shortMultiline(contentText, 420),
+          timeLabel,
+          chips: ['user'],
+          sections: buildRichTextSections(contentText, { textLabel: 'Prompt' })
+        }));
       }
       return;
     }
@@ -1157,7 +1465,8 @@ function normalizeTrajectory(text, fileName, filePath, side) {
     }
     const thoughtText = String(raw.thought || contentText || '').trim();
     const action = Array.isArray(extra.actions) && extra.actions.length ? extra.actions[0] : null;
-    const commandText = String(raw.bash_command || (action && (action.bash_command || action.command)) || '').trim();
+    const actionPayload = extractActionPayload(raw, action);
+    const commandText = actionPayload.text;
     const finalText = String(raw.final_response || '').trim();
     const done = raw.done === true || extra.done === true;
     if (thoughtText) {
@@ -1169,8 +1478,24 @@ function normalizeTrajectory(text, fileName, filePath, side) {
         sourceLabel: 'assistant thought',
         chips: [done ? 'done' : 'assistant']
       });
-      thoughtEntries.push({ id: id + '-thought', order: thoughtOrder, text: shortMultiline(thoughtText, 520), timeLabel, chips: [done ? 'done' : 'assistant'] });
+      thoughtEntries.push({
+        id: id + '-thought',
+        order: thoughtOrder,
+        text: shortMultiline(thoughtText, 520),
+        timeLabel,
+        chips: [done ? 'done' : 'assistant'],
+        sections: buildRichTextSections(thoughtText, { textLabel: 'Reasoning', detectCode: true })
+      });
       events.push({ id: id + '-thought-event', kind: 'thought', summary: shortMultiline(thoughtText, 460), timeLabel, chips: [done ? 'done' : 'assistant'] });
+      detailEntries.push(createDetailEntry({
+        id: id + '-thought-detail',
+        kind: 'thought',
+        kindLabel: 'Thought',
+        summary: shortMultiline(thoughtText, 460),
+        timeLabel,
+        chips: [done ? 'done' : 'assistant'],
+        sections: buildRichTextSections(thoughtText, { textLabel: 'Reasoning', detectCode: true })
+      }));
     }
     if (commandText) {
       commandOrder += 1;
@@ -1179,23 +1504,34 @@ function normalizeTrajectory(text, fileName, filePath, side) {
         order: commandOrder,
         command: commandText,
         primaryCommand: primaryCommand(commandText),
-        channel: 'bash_command',
+        channel: actionPayload.channel,
         timeLabel,
         exitCode: null,
         outputPreview: '',
+        outputText: '',
         status: 'started',
-        statusClass: ''
+        statusClass: '',
+        sections: buildCommandSections(commandText, actionPayload.channel)
       };
       pendingRun = run;
       commandRuns.push(run);
-      estimateParts.push({ label: 'assistant commands', text: commandText });
+      estimateParts.push({ label: actionPayload.estimateLabel || 'assistant commands', text: commandText });
       appendPythonScripts(pythonScripts, pythonSeen, commandText, {
         idPrefix: side + '-trajectory-python',
         timeLabel,
-        sourceLabel: 'assistant command',
+        sourceLabel: actionPayload.field || actionPayload.channel || 'assistant command',
         chips: ['assistant', primaryCommand(commandText)]
       });
       events.push({ id: id + '-command-event', kind: 'command', summary: shortMultiline(commandText, 460), timeLabel, chips: ['assistant', primaryCommand(commandText)] });
+      detailEntries.push(createDetailEntry({
+        id: id + '-command-detail',
+        kind: 'command',
+        kindLabel: 'Command',
+        summary: shortMultiline(commandText, 460),
+        timeLabel,
+        chips: ['assistant', primaryCommand(commandText)],
+        sections: buildCommandSections(commandText, actionPayload.channel)
+      }));
     }
     if (finalText) {
       finalOrder += 1;
@@ -1208,6 +1544,15 @@ function normalizeTrajectory(text, fileName, filePath, side) {
       });
       finalResponses.push({ id: id + '-final', order: finalOrder, text: shortMultiline(finalText, 520), timeLabel });
       events.push({ id: id + '-final-event', kind: 'final_response', summary: shortMultiline(finalText, 460), timeLabel, chips: ['done=' + done] });
+      detailEntries.push(createDetailEntry({
+        id: id + '-final-detail',
+        kind: 'final_response',
+        kindLabel: 'Final Response',
+        summary: shortMultiline(finalText, 460),
+        timeLabel,
+        chips: ['done=' + done],
+        sections: buildRichTextSections(finalText, { textLabel: 'Response', detectCode: true })
+      }));
     }
   });
   commandRuns.forEach((run) => {
@@ -1230,6 +1575,7 @@ function normalizeTrajectory(text, fileName, filePath, side) {
     commandRuns,
     finalResponses,
     pythonScripts,
+    detailEntries,
     exactTokens: latestTokens,
     tokenSourceLabel: latestTokens
       ? 'Exact tokens from usage snapshot.'
@@ -1239,13 +1585,14 @@ function normalizeTrajectory(text, fileName, filePath, side) {
       'messages[].content',
       'messages[].extra.raw_response.thought',
       'messages[].extra.raw_response.bash_command',
+      'messages[].extra.raw_response.python_code',
       'messages[].extra.raw_response.final_response',
       'messages[].extra.observation.command_output'
     ],
     metrics: [
       { label: 'Messages', value: numberFormat(parsed.messages.length), sub: 'top-level transcript turns' },
       { label: 'Thoughts', value: numberFormat(thoughtEntries.length), sub: 'assistant reasoning entries' },
-      { label: 'Commands', value: numberFormat(commandRuns.length), sub: 'assistant bash commands' },
+      { label: 'Commands', value: numberFormat(commandRuns.length), sub: 'assistant action commands' },
       { label: 'API calls', value: numberFormat(parsed.info && parsed.info.api_calls), sub: 'info.api_calls from trajectory metadata' }
     ]
   });
@@ -1260,6 +1607,7 @@ function normalizeCopilotSessionMarkdown(text, fileName, filePath, side) {
   const finalResponses = [];
   const pythonScripts = [];
   const pythonSeen = new Set();
+  const detailEntries = [];
   const estimateParts = [];
   let taskPrompt = '';
   let thoughtOrder = 0;
@@ -1291,6 +1639,15 @@ function normalizeCopilotSessionMarkdown(text, fileName, filePath, side) {
       if (clean) {
         estimateParts.push({ label: 'user sections', text: clean });
         events.push({ id: side + '-session-user-' + eventOrder, kind: 'user_message', summary: textBody, timeLabel: section.timeLabel, chips: ['user'] });
+        detailEntries.push(createDetailEntry({
+          id: side + '-session-user-detail-' + eventOrder,
+          kind: 'user_message',
+          kindLabel: 'User',
+          summary: textBody,
+          timeLabel: section.timeLabel,
+          chips: ['user'],
+          sections: buildRichTextSections(clean, { textLabel: 'Prompt', detectCode: true })
+        }));
         eventOrder += 1;
       }
       return;
@@ -1308,8 +1665,24 @@ function normalizeCopilotSessionMarkdown(text, fileName, filePath, side) {
         sourceLabel: 'copilot section',
         chips: ['copilot']
       });
-      thoughtEntries.push({ id: side + '-session-thought-' + thoughtOrder, order: thoughtOrder, text: shortMultiline(clean, 520), timeLabel: section.timeLabel, chips: ['copilot'] });
+      thoughtEntries.push({
+        id: side + '-session-thought-' + thoughtOrder,
+        order: thoughtOrder,
+        text: shortMultiline(clean, 520),
+        timeLabel: section.timeLabel,
+        chips: ['copilot'],
+        sections: buildRichTextSections(clean, { textLabel: 'Narrative', detectCode: true })
+      });
       events.push({ id: side + '-session-copilot-' + eventOrder, kind: 'thought', summary: shortMultiline(clean, 460), timeLabel: section.timeLabel, chips: ['copilot'] });
+      detailEntries.push(createDetailEntry({
+        id: side + '-session-copilot-detail-' + eventOrder,
+        kind: 'thought',
+        kindLabel: 'Copilot',
+        summary: shortMultiline(clean, 460),
+        timeLabel: section.timeLabel,
+        chips: ['copilot'],
+        sections: buildRichTextSections(clean, { textLabel: 'Narrative', detectCode: true })
+      }));
       eventOrder += 1;
       if (/final|done|complete|result/i.test(clean)) {
         finalResponses.push({ id: side + '-session-final-' + finalResponses.length, order: finalResponses.length + 1, text: shortMultiline(clean, 520), timeLabel: section.timeLabel });
@@ -1321,6 +1694,7 @@ function normalizeCopilotSessionMarkdown(text, fileName, filePath, side) {
       const parsed = parseSessionToolSection(section, side, commandOrder, eventOrder);
       commandRuns.push(parsed.run);
       parsed.events.forEach((event) => events.push(event));
+      parsed.detailEntries.forEach((entry) => detailEntries.push(entry));
       estimateParts.push(...parsed.estimateParts);
       parsed.pythonScripts.forEach((script) => {
         if (pythonSeen.has(script.text)) {
@@ -1360,6 +1734,7 @@ function normalizeCopilotSessionMarkdown(text, fileName, filePath, side) {
     commandRuns,
     finalResponses,
     pythonScripts,
+    detailEntries,
     tokenSourceLabel: 'Estimated from extracted trace text.',
     tokenEstimateParts: estimateParts,
     countedFieldLabels: ['session header metadata', '### User body text', '### Copilot body text', 'tool titles', '### ✅ tool Arguments blocks', '### ✅ tool commands / outputs'],
@@ -1469,7 +1844,16 @@ const app = createApp({
       this.refreshAllTokens();
     }
   },
+  mounted() {
+    this.highlightRenderedCode();
+  },
+  updated() {
+    this.highlightRenderedCode();
+  },
   methods: {
+    codeClass(language) {
+      return 'language-' + (normalizeCodeLanguage(language) || 'plaintext');
+    },
     traceBySide(side) {
       return this[side];
     },
@@ -1543,8 +1927,8 @@ const app = createApp({
         const text = await file.text();
         const companion = extractTrajectoryUsage(text, file.name);
         const updatedTrace = applyTrajectoryCompanion(trace, companion);
-        await this.enrichTraceTokens(updatedTrace);
         this[side] = updatedTrace;
+        this.enrichTraceTokens(updatedTrace);
       } catch (error) {
         this.attachmentErrors[side] = error && error.message ? error.message : 'Failed to attach trajectory.json';
       } finally {
@@ -1599,8 +1983,8 @@ const app = createApp({
       try {
         const text = await file.text();
         const trace = normalizeTrace(text, file.name, file.path || '', side);
-        await this.enrichTraceTokens(trace);
         this[side] = trace;
+        this.enrichTraceTokens(trace);
       } catch (error) {
         this[side] = null;
         this.errors[side] = error && error.message ? error.message : 'Failed to parse file';
@@ -1611,6 +1995,19 @@ const app = createApp({
         return [];
       }
       return trace.events.filter((event) => event.kind !== 'token_snapshot');
+    },
+    highlightRenderedCode() {
+      if (!window.hljs) {
+        return;
+      }
+      this.$nextTick(() => {
+        document.querySelectorAll('#app pre code').forEach((node) => {
+          if (node.dataset.highlighted === 'yes') {
+            delete node.dataset.highlighted;
+          }
+          window.hljs.highlightElement(node);
+        });
+      });
     }
   }
 });

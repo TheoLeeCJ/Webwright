@@ -7,6 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Public+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/default.min.css">
   <link rel="stylesheet" href="./styles.css">
 </head>
 <body>
@@ -16,7 +17,7 @@
         <div>
           <h1 class="brand-title">Webwright Trajectory Comparison</h1>
           <div class="brand-copy">
-            Compare Codex JSONL, Webwright raw and trajectory traces, and Copilot session markdown in one normalized view.
+            Compare Codex JSONL, Webwright raw and trajectory traces, and Copilot session markdown
           </div>
         </div>
         <nav class="tab-strip">
@@ -232,7 +233,7 @@
             <div class="panel-head">
               <div>
                 <h2 class="panel-title">Detailed Trace</h2>
-                <div class="muted">Switch between thoughts, commands, and the combined event trail.</div>
+                <div class="muted">Switch between extracted code, reasoning, commands, and the combined typed timeline.</div>
               </div>
               <div class="tab-strip">
                 <button
@@ -282,7 +283,13 @@
                       <strong>{{ script.title || 'Python Script' }}</strong>
                       {{ script.sourceLabel }}
                     </div>
-                    <div class="thought-body mono">{{ script.text }}</div>
+                    <div class="detail-sections">
+                      <section class="detail-section" v-for="(section, sectionIndex) in script.sections" :key="script.id + '-section-' + sectionIndex">
+                        <div v-if="section.label" class="detail-section-label">{{ section.label }}</div>
+                        <div v-if="section.type === 'text'" class="detail-text">{{ section.text }}</div>
+                        <pre v-else class="detail-code-wrap"><code class="detail-code" :class="codeClass(section.language)">{{ section.text }}</code></pre>
+                      </section>
+                    </div>
                   </article>
                 </template>
                 <div v-else class="task-box">
@@ -300,7 +307,13 @@
                   <div class="event-meta">
                     <span class="badge" v-for="chip in thought.chips" :key="thought.id + '-' + chip">{{ chip }}</span>
                   </div>
-                  <div class="thought-body">{{ thought.text }}</div>
+                  <div class="detail-sections">
+                    <section class="detail-section" v-for="(section, sectionIndex) in thought.sections" :key="thought.id + '-section-' + sectionIndex">
+                      <div v-if="section.label" class="detail-section-label">{{ section.label }}</div>
+                      <div v-if="section.type === 'text'" class="detail-text">{{ section.text }}</div>
+                      <pre v-else class="detail-code-wrap"><code class="detail-code" :class="codeClass(section.language)">{{ section.text }}</code></pre>
+                    </section>
+                  </div>
                 </article>
               </div>
 
@@ -310,26 +323,40 @@
                     <div class="run-title">command {{ run.order }}</div>
                     <div class="event-time">{{ run.timeLabel }}</div>
                   </div>
-                  <div class="run-command mono">{{ run.command }}</div>
                   <div class="event-meta">
                     <span class="badge">{{ run.primaryCommand }}</span>
                     <span class="badge">{{ run.channel }}</span>
                     <span class="badge" :class="run.statusClass">{{ run.status }}</span>
                     <span class="badge" v-if="run.exitCode !== null">exit {{ run.exitCode }}</span>
                   </div>
-                  <div class="run-output" v-if="run.outputPreview">{{ run.outputPreview }}</div>
+                  <div class="detail-sections">
+                    <section class="detail-section" v-for="(section, sectionIndex) in run.sections" :key="run.id + '-section-' + sectionIndex">
+                      <div v-if="section.label" class="detail-section-label">{{ section.label }}</div>
+                      <div v-if="section.type === 'text'" class="detail-text">{{ section.text }}</div>
+                      <pre v-else class="detail-code-wrap"><code class="detail-code" :class="codeClass(section.language)">{{ section.text }}</code></pre>
+                    </section>
+                  </div>
                 </article>
               </div>
 
               <div v-else class="event-list">
-                <article class="event" v-for="event in filteredEvents(trace)" :key="trace.side + '-event-' + event.id">
+                <article class="event detail-card" v-for="entry in trace.detailEntries" :key="trace.side + '-detail-' + entry.id">
                   <div class="event-head">
-                    <div class="event-kind">{{ event.kind }}</div>
-                    <div class="event-time">{{ event.timeLabel }}</div>
+                    <div>
+                      <div class="event-kind">{{ entry.kindLabel }}</div>
+                      <div class="event-summary detail-summary" v-if="entry.summary">{{ entry.summary }}</div>
+                    </div>
+                    <div class="event-time">{{ entry.timeLabel }}</div>
                   </div>
-                  <div class="event-summary">{{ event.summary }}</div>
                   <div class="event-meta">
-                    <span class="badge" v-for="chip in event.chips" :key="event.id + '-' + chip">{{ chip }}</span>
+                    <span class="badge" v-for="chip in entry.chips" :key="entry.id + '-' + chip">{{ chip }}</span>
+                  </div>
+                  <div class="detail-sections">
+                    <section class="detail-section" v-for="(section, sectionIndex) in entry.sections" :key="entry.id + '-section-' + sectionIndex">
+                      <div v-if="section.label" class="detail-section-label">{{ section.label }}</div>
+                      <div v-if="section.type === 'text'" class="detail-text">{{ section.text }}</div>
+                      <pre v-else class="detail-code-wrap"><code class="detail-code" :class="codeClass(section.language)">{{ section.text }}</code></pre>
+                    </section>
                   </div>
                 </article>
               </div>
@@ -348,6 +375,7 @@
   </div>
 
   <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js"></script>
   <script type="module" src="./app.js"></script>
 </body>
 </html>

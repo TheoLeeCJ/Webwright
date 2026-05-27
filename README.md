@@ -339,6 +339,58 @@ Note: the named subcommands shipped under [`skills/webwright/commands/`](skills/
 
 </details>
 
+## 📃 Trajectory Comparison & Viewer
+
+You can run the same tasks using the Webwright harness and its Codex / GitHub Copilot skill variant, and see how token usage and trajectories stack up between different harnesses. The trajectory viewer supports Codex, GitHub Copilot and Webwright harness traces.
+
+![Trajectory comparison](assets/trajectory-compare.png)
+
+### How to use
+
+```bash
+cd assets/compare_trajectory/
+python3 -m http.server
+```
+
+Open the webpage in your browser and upload the Webwright `raw_responses.jsonl` and attach `trajectory.json` to view. Then on the other side you can upload your Codex or GitHub Copilot trace.
+
+### Obtaining Codex traces:
+
+```
+ls ~/.codex/sessions/2026/MONTH/DAY/SESSION_ID.jsonl
+```
+
+### Obtaining GitHub Copilot traces:
+
+```
+/export file session
+-> session.md is the uploadable trace
+```
+
+### Quick Comparison
+
+#### Find a staffed FedEx location near zip code 10019 to return a package.
+
+| Tokens | Webwright Harness | Codex Webwright Skill |
+| --- | ---: | ---: |
+| Input | 421,036 | 842,458 |
+| Output | 8,079 | 7,409 |
+| Reasoning | 0 | 648 |
+| Cached | 338,944 | 699,648 |
+| Total | 429,115 | 849,867 |
+
+#### Show houses for sale in Maryland with a maximum price of $60,000.
+
+| Tokens | Webwright Harness | Codex Webwright Skill |
+| --- | ---: | ---: |
+| Input | 671,553 | 708,697 |
+| Output | 8,743 | 6,631 |
+| Reasoning | 0 | 729 |
+| Cached | 553,344 | 584,960 |
+| Total | 680,296 | 715,328 |
+
+Individual runs and results may vary.
+
 ---
 
 ## Credits
