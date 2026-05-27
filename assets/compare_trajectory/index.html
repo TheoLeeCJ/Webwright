@@ -102,15 +102,21 @@
     </section>
 
     <main class="content">
-      <section v-if="!bothLoaded" class="panel">
+      <section v-if="!hasAnyTrace" class="panel">
         <div class="empty-state">
-          Load two traces to compare extracted thought entries, shell commands, token provenance, and end-state outputs in a shared format.
+          Load at least one trace to inspect extracted thought entries, shell commands, token provenance, and end-state outputs.
         </div>
       </section>
 
       <template v-else>
         <section v-if="activeView === 'summary'">
-          <section class="panel">
+          <section v-if="!bothLoaded" class="panel">
+            <div class="empty-state">
+              Load a second trace to use the side-by-side comparison matrix. Per-trace summary still works with a single upload.
+            </div>
+          </section>
+
+          <section class="panel" v-if="bothLoaded">
             <div class="panel-head">
               <div>
                 <h2 class="panel-title">Comparison Matrix</h2>
@@ -144,7 +150,7 @@
               <div class="toolbar-copy">{{ tokenizerStatus }}</div>
             </div>
             <div class="trace-pane-grid">
-              <article class="mini-card" v-for="trace in [leftTrace, rightTrace]" :key="trace.side + '-summary'">
+              <article class="mini-card" v-for="trace in loadedTraces" :key="trace.side + '-summary'">
                 <div class="trace-card-head">
                   <div>
                     <h3>{{ trace.fileName }}</h3>
@@ -203,7 +209,7 @@
               </div>
             </div>
             <div class="trace-pane-grid">
-              <article class="mini-card" v-for="trace in [leftTrace, rightTrace]" :key="trace.side + '-bars'">
+              <article class="mini-card" v-for="trace in loadedTraces" :key="trace.side + '-bars'">
                 <h3>{{ trace.fileName }}</h3>
                 <div class="bar-list">
                   <div class="bar-row" v-for="row in trace.commandFamilies" :key="trace.side + '-cmd-' + row.label">
@@ -250,7 +256,7 @@
           </section>
 
           <div class="trace-grid">
-            <article class="trace-card" v-for="trace in [leftTrace, rightTrace]" :key="trace.side + '-trace'">
+            <article class="trace-card" v-for="trace in loadedTraces" :key="trace.side + '-trace'">
               <div class="trace-card-head">
                 <div>
                   <h3 class="trace-name">{{ trace.fileName }}</h3>
@@ -344,7 +350,7 @@
                   <div class="event-head">
                     <div>
                       <div class="event-kind">{{ entry.kindLabel }}</div>
-                      <div class="event-summary detail-summary" v-if="entry.summary">{{ entry.summary }}</div>
+                      <div class="event-summary detail-summary" v-if="shouldShowEntrySummary(entry)">{{ entry.summary }}</div>
                     </div>
                     <div class="event-time">{{ entry.timeLabel }}</div>
                   </div>

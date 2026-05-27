@@ -162,7 +162,7 @@ class OpenRouterModel(BaseModel):
 
     def _build_payload(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
         payload: dict[str, Any] = {
-            "service_tier": "flex",
+            # "service_tier": "flex",
             "model": self.config.model_name,
             "messages": _serialize_chat_messages(messages),
             "stream": False,

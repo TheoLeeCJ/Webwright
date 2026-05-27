@@ -255,7 +255,16 @@ async function loadEncoder(encoding) {
   if (encodingCache.has(encoding)) {
     return encodingCache.get(encoding);
   }
-  const response = await fetch(`https://tiktoken.pages.dev/js/${encoding}.json`);
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), 8000);
+  let response;
+  try {
+    response = await fetch(`https://tiktoken.pages.dev/js/${encoding}.json`, {
+      signal: controller.signal
+    });
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
   if (!response.ok) {
     throw new Error(`Failed to load ${encoding} ranks from CDN`);
   }
@@ -263,6 +272,14 @@ async function loadEncoder(encoding) {
   const encoder = new Tiktoken(ranks);
   encodingCache.set(encoding, encoder);
   return encoder;
+}
+
+function quickTokenEstimate(text) {
+  const source = String(text || '');
+  if (!source.trim()) {
+    return 0;
+  }
+  return Math.max(1, Math.ceil(source.length / 4));
 }
 
 function mergeEstimateParts(parts) {
@@ -875,22 +892,18 @@ function parseSessionToolSection(section, side, commandOrder, eventOrder) {
     ],
     detailEntries: [
       createDetailEntry({
-        id: side + '-session-detail-tool-call-' + commandOrder,
-        kind: 'tool_call',
-        kindLabel: 'Tool Call',
-        summary: section.tool === 'apply_patch' ? (command || plainBody) : shortMultiline(command || plainBody, 460),
+        id: side + '-session-detail-tool-' + commandOrder,
+        kind: 'tool',
+        kindLabel: 'Tool',
+        summary: section.tool === 'apply_patch'
+          ? (command || plainBody)
+          : shortMultiline(command || output || plainBody, 460),
         timeLabel: section.timeLabel,
-        chips: [section.tool, primaryCommand(command || section.tool)].concat(extraChips),
-        sections: buildCommandSections(command || payloadText, section.tool)
-      }),
-      createDetailEntry({
-        id: side + '-session-detail-tool-result-' + commandOrder,
-        kind: 'tool_result',
-        kindLabel: 'Tool Result',
-        summary: shortMultiline(output || plainBody, 460),
-        timeLabel: section.timeLabel,
-        chips: [section.tool].concat(exitCode !== null ? ['exit ' + exitCode] : []).concat(extractLargeOutputPath(output) ? ['saved output'] : []),
-        sections: [makeCodeSection(output || plainBody, inferCodeLanguage(output || plainBody), 'Output')]
+        chips: [section.tool, primaryCommand(command || section.tool)]
+          .concat(extraChips)
+          .concat(exitCode !== null ? ['exit ' + exitCode] : [])
+          .concat(extractLargeOutputPath(output) ? ['saved output'] : []),
+        sections: buildCommandSections(command || payloadText, section.tool, output || plainBody)
       })
     ],
     estimateParts: [
@@ -1256,6 +1269,8 @@ function normalizeRawResponses(text, fileName, filePath, side) {
       const hasThought = !!String(frame.thought || '').trim();
       const hasCommand = !!actionPayload.text;
       const hasFinal = !!String(frame.final_response || '').trim();
+      const frameSections = [];
+      const frameChips = ['attempt ' + (outer.attempt || 'n/a')];
       if (!hasThought && !hasCommand && !hasFinal) {
         emptyFrames += 1;
         return;
@@ -1280,18 +1295,10 @@ function normalizeRawResponses(text, fileName, filePath, side) {
           chips: ['attempt ' + (outer.attempt || 'n/a')]
         });
         events.push({ id: idBase + '-thought-event', kind: 'thought', summary: textBody, timeLabel, chips: ['attempt ' + (outer.attempt || 'n/a')] });
-        detailEntries.push(createDetailEntry({
-          id: idBase + '-thought-detail',
-          kind: 'thought',
-          kindLabel: 'Thought',
-          summary: textBody,
-          timeLabel,
-          chips: ['attempt ' + (outer.attempt || 'n/a')],
-          sections: buildRichTextSections(frame.thought, { textLabel: 'Reasoning', detectCode: true })
-        }));
         if (!taskPrompt && /task|search|goal/i.test(textBody)) {
           taskPrompt = textBody;
         }
+        frameSections.push(...buildRichTextSections(frame.thought, { textLabel: 'Reasoning', detectCode: true }));
       }
       if (hasCommand) {
         commandOrder += 1;
@@ -1319,15 +1326,8 @@ function normalizeRawResponses(text, fileName, filePath, side) {
           chips: ['attempt ' + (outer.attempt || 'n/a')]
         });
         events.push({ id: idBase + '-command-event', kind: 'command', summary: shortMultiline(command, 460), timeLabel, chips: ['attempt ' + (outer.attempt || 'n/a'), primaryCommand(command)] });
-        detailEntries.push(createDetailEntry({
-          id: idBase + '-command-detail',
-          kind: 'command',
-          kindLabel: 'Command',
-          summary: shortMultiline(command, 460),
-          timeLabel,
-          chips: ['attempt ' + (outer.attempt || 'n/a'), primaryCommand(command)],
-          sections: buildCommandSections(command, actionPayload.channel)
-        }));
+        frameSections.push(makeCodeSection(command, actionPayload.channel, 'Command'));
+        frameChips.push(primaryCommand(command));
       }
       if (hasFinal) {
         finalOrder += 1;
@@ -1341,16 +1341,21 @@ function normalizeRawResponses(text, fileName, filePath, side) {
           chips: ['done=' + Boolean(frame.done)]
         });
         events.push({ id: idBase + '-final-event', kind: 'final_response', summary: responseText, timeLabel, chips: ['done=' + Boolean(frame.done)] });
-        detailEntries.push(createDetailEntry({
-          id: idBase + '-final-detail',
-          kind: 'final_response',
-          kindLabel: 'Final Response',
-          summary: responseText,
-          timeLabel,
-          chips: ['done=' + Boolean(frame.done)],
-          sections: buildRichTextSections(frame.final_response, { textLabel: 'Response', detectCode: true })
-        }));
+        frameSections.push(...buildRichTextSections(frame.final_response, { textLabel: 'Response', detectCode: true }));
+        frameChips.push('done=' + Boolean(frame.done));
       }
+      detailEntries.push(createDetailEntry({
+        id: idBase + '-frame-detail',
+        kind: 'frame',
+        kindLabel: 'Step',
+        summary: shortMultiline(
+          actionPayload.text || String(frame.final_response || '') || String(frame.thought || ''),
+          460
+        ),
+        timeLabel,
+        chips: frameChips,
+        sections: frameSections
+      }));
     });
   });
   const channelFamilies = toBarRows([
@@ -1799,6 +1804,12 @@ const app = createApp({
     bothLoaded() {
       return !!(this.left && this.right);
     },
+    hasAnyTrace() {
+      return !!(this.left || this.right);
+    },
+    loadedTraces() {
+      return [this.left, this.right].filter(Boolean);
+    },
     leftTrace() {
       return this.left;
     },
@@ -1853,6 +1864,23 @@ const app = createApp({
   methods: {
     codeClass(language) {
       return 'language-' + (normalizeCodeLanguage(language) || 'plaintext');
+    },
+    shouldShowEntrySummary(entry) {
+      if (!entry || !String(entry.summary || '').trim()) {
+        return false;
+      }
+      if (entry.kind === 'frame' && Array.isArray(entry.sections) && entry.sections.length) {
+        return false;
+      }
+      const sections = Array.isArray(entry.sections) ? entry.sections : [];
+      if (sections.length !== 1) {
+        return true;
+      }
+      const onlySection = sections[0];
+      if (!onlySection || onlySection.type !== 'text') {
+        return true;
+      }
+      return shortMultiline(onlySection.text, 460) !== shortMultiline(entry.summary, 460);
     },
     traceBySide(side) {
       return this[side];
@@ -1946,6 +1974,17 @@ const app = createApp({
         }
         return trace;
       }
+      const quickBasisRows = trace.tokenEstimateParts
+        .map((part) => ({ label: part.label, value: quickTokenEstimate(part.text) }))
+        .filter((row) => row.value > 0);
+      trace.tokenEstimateTotal = quickBasisRows.reduce((sum, row) => sum + row.value, 0);
+      if (!trace.exactTokens) {
+        trace.tokenRows = [
+          { label: 'basis', value: 'estimated' },
+          { label: 'encoding', value: selection.encoding + ' pending' },
+          { label: 'est. output tokens', value: '~' + numberFormat(trace.tokenEstimateTotal) }
+        ];
+      }
       try {
         this.tokenizerStatus = 'Counting tokens with ' + selection.encoding + '...';
         const encoder = await loadEncoder(selection.encoding);
@@ -1963,11 +2002,15 @@ const app = createApp({
         this.tokenizerStatus = 'Ready.';
       } catch (error) {
         trace.tokenEstimateError = error && error.message ? error.message : 'Failed to estimate tokens';
-        trace.tokenBasisRows = [];
+        trace.tokenBasisRows = toBarRows(quickBasisRows, 8);
         if (!trace.exactTokens) {
-          trace.tokenRows = [{ label: 'availability', value: trace.tokenEstimateError }];
+          trace.tokenRows = [
+            { label: 'basis', value: 'estimated' },
+            { label: 'encoding', value: 'quick fallback' },
+            { label: 'est. output tokens', value: '~' + numberFormat(trace.tokenEstimateTotal) }
+          ];
         }
-        this.tokenizerStatus = trace.tokenEstimateError;
+        this.tokenizerStatus = trace.tokenEstimateError + '. Showing quick estimate.';
       }
       return trace;
     },
